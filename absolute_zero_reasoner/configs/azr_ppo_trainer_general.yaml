@@ -1,0 +1,191 @@
+data:
+  tokenizer: null
+  train_files: data/math/train_${reward_fn.extraction_type}.parquet
+  val_files: data/math/test_${reward_fn.extraction_type}.parquet
+  prompt_key: prompt
+  max_prompt_length: 8096
+  max_response_length: 8096
+  max_validation_prompt_length: 8096
+  train_batch_size: 128  # Reduced batch size for general tasks
+  val_batch_size: 256
+  return_raw_input_ids: False
+  return_raw_chat: False
+  shuffle: True
+
+actor_rollout_ref:
+  hybrid_engine: True
+  model:
+    path: ~/models/deepseek-llm-7b-chat
+    pretrained_tokenizer: True
+    external_lib: null
+    override_config: { }
+    enable_gradient_checkpointing: True
+    use_remove_padding: False
+  actor:
+    strategy: fsdp
+    ppo_mini_batch_size: 256  # Will be auto-calculated
+    ppo_micro_batch_size: null
+    ppo_micro_batch_size_per_gpu: null
+    use_dynamic_bsz: False
+    ppo_max_token_len_per_gpu: 16384
+    grad_clip: 1.0
+    clip_ratio: 0.2
+    entropy_coeff: 0.001
+    use_kl_loss: False
+    kl_loss_coef: 0.001
+    kl_loss_type: low_var_kl
+    ppo_epochs: 1
+    shuffle: False
+    ulysses_sequence_parallel_size: 1
+    optim:
+      lr: 1e-6
+      lr_warmup_steps_ratio: 0.
+      min_lr_ratio: null
+      warmup_style: constant
+      total_training_steps: -1
+    fsdp_config:
+      wrap_policy:
+        # transformer_layer_cls_to_wrap: None
+        min_num_params: 0
+      param_offload: False
+      grad_offload: False
+      optimizer_offload: False
+      fsdp_size: -1
+  ref:
+    include_ref: True
+    fsdp_config:
+      param_offload: False
+      wrap_policy:
+        # transformer_layer_cls_to_wrap: None
+        min_num_params: 0
+    log_prob_micro_batch_size: null # will be deprecated, use log_prob_micro_batch_size_per_gpu
+    log_prob_micro_batch_size_per_gpu: null
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size} # sp size
+  rollout:
+    name: vllm
+    temperature: 1.0
+    top_k: -1 # 0 for hf rollout, -1 for vllm rollout
+    top_p: 1
+    prompt_length: ${data.max_prompt_length}  # not use for opensource
+    response_length: ${data.max_response_length}
+    # for vllm rollout
+    dtype: bfloat16 # should align with FSDP
+    gpu_memory_utilization: 0.5
+    ignore_eos: False
+    enforce_eager: True
+    free_cache_engine: True
+    load_format: dummy_dtensor
+    tensor_model_parallel_size: 2
+    max_num_batched_tokens: 8192
+    max_num_seqs: 1024
+    log_prob_micro_batch_size: null # will be deprecated, use log_prob_micro_batch_size_per_gpu
+    log_prob_micro_batch_size_per_gpu: null
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    disable_log_stats: True
+    enable_chunked_prefill: True # could get higher throughput
+    # for hf rollout
+    do_sample: True
+    # number of responses (i.e. num sample times)
+    n: 1 # > 1 for grpo
+
+trainer:
+  save_freq: 10
+  log_freq: 1
+  eval_freq: 5
+  test_freq: 10
+  save_tokenizer: True
+  max_eval_steps: 1
+  rollout_micro_batch_size: 128
+  n_gpus_per_node: 2
+  nnodes: 1
+  save_optimizer: False
+  project_name: general_io_reasoning
+  experiment_name: general_io_experiment
+  logger: [ 'console', 'wandb' ]
+  wandb_tags: null
+  wandb_run_id: null
+  resume_mode: disable  # [disable, auto]
+  debug: False
+  debug_port: 5680
+  critic_warmup: 0
+  total_training_steps: 1000
+  default_hdfs_dir: null
+  default_local_dir: checkpoints/general/${trainer.project_name}/${trainer.experiment_name}
+
+
+critic:
+  strategy: fsdp
+  layer_name: "LlamaDecoderLayer"
+  lr: 5e-6
+  optim:
+    lr: 5e-6
+    lr_warmup_steps_ratio: 0.
+    min_lr_ratio: null
+    warmup_style: constant
+    total_training_steps: -1
+  fsdp_config:
+    wrap_policy:
+      min_num_params: 0
+    param_offload: False
+    mixed_precision:
+      param_dtype: bfloat16
+      reduce_dtype: bfloat16
+      buffer_dtype: bfloat16
+      keep_low_precision_grads: true
+    sharding_strategy: FULL_SHARD
+    cpu_offload: False
+
+algorithm:
+  kl_penalty: 0.002
+  adv_estimator: gae
+  gamma: 1.0
+  lam: 0.95
+
+reward_model:
+  enable: False
+  strategy: fsdp
+
+reward_fn:
+  extraction_type: boxed
+  math_metric: deepscaler
+  splitter: "Assistant:"
+  boxed_retry: False
+  # LLM configuration for GeneralIORewardManager
+  llm_model_name: "meta/llama-3.1-405b-instruct"
+  temperature: 0.7
+  max_tokens: 1000
+  top_p: 0.95
+  stream: true
+
+azr:
+  task_type: general  # Set to 'general' to use GeneralIORewardManager and GeneralIORayPPOTrainer
+  seed: 1
+  problem_types:
+    - general  # Only general tasks
+  pred_data_mix_strategy: "uniform_total"
+  past_epoch_window: 10
+  pretrain_pred_steps: -1
+  random_print_max_programs: 3
+  train_propose: False  # Simplified for general tasks
+  
+  data_selection_strategy:
+    io_n: 6
+    update_iteration: 1
+    data_len: null
+    content_max_length: 8096
+    max_questions: 10000  # Limit for general questions dataset
+    valid_question_filter: all
+    batched_estimate: False
+    
+  reward:
+    generation_reward_config:
+      format_reward: false  # No format reward for general tasks
+      include_references: false
+      generation_accuracy_convertion: "inverse"
+      answer_diversity_reward:
+        hierarchical: false
+    eval_reward_config: {}
+    n_samples: 3  # Number of samples for difficulty estimation
