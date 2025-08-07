@@ -1,0 +1,21 @@
+[project]
+name = "livecodebench"
+version = "0.1.0"
+description = "LiveCodeBench"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "annotated-types>=0.7.0",
+    "anthropic>=0.42.0",
+    "cohere>=5.13.6",
+    "datasets>=3.2.0",
+    "google-genai>=0.6.0",
+    "mistralai==0.4.2",
+    "openai>=1.59.6",
+    "pebble>=5.1.0",
+    "torch>=2.3.0",
+    "vllm>=0.5.0.post1",
+]
+
+[tool.setuptools]
+packages = ["lcb_runner"]
