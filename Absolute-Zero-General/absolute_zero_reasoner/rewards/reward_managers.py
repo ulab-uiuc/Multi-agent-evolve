@@ -950,24 +950,43 @@ class GeneralIORewardManager:
                 result = result.strip()
                 print(f"LLM Response: {result}")  # Debugging output
                 
-                # Try to extract a numeric score from the response
+                # Try to extract score from <score></score> tags
                 import re
-                score_match = re.search(r'(\d+\.?\d*)', result)
+                score_match = re.search(r'<score>(\d+)</score>', result, re.IGNORECASE)
                 if score_match:
-                    score = float(score_match.group(1))
-                    # Normalize to 0-1 range if needed
-                    if score > 1.0:
-                        score = score / 10.0 if score <= 10.0 else score / 100.0
+                    score = int(score_match.group(1))
+                    # Convert from 1-10 scale to 0-1 scale
+                    score = (score - 1) / 9.0  # Maps 1->0, 10->1
                     return min(1.0, max(0.0, score))
                 else:
+                    # Fallback: try to extract any number between 1-10
+                    fallback_match = re.search(r'(\d+)', result)
+                    if fallback_match:
+                        score = int(fallback_match.group(1))
+                        if 1 <= score <= 10:
+                            score = (score - 1) / 9.0
+                            return min(1.0, max(0.0, score))
                     return 0.0
             else:
                 result = completion.choices[0].message.content.strip()
                 print(f"LLM Response: {result}")  # Debugging output
-                try:
-                    score = float(result)
+                
+                # Try to extract score from <score></score> tags
+                import re
+                score_match = re.search(r'<score>(\d+)</score>', result, re.IGNORECASE)
+                if score_match:
+                    score = int(score_match.group(1))
+                    # Convert from 1-10 scale to 0-1 scale
+                    score = (score - 1) / 9.0  # Maps 1->0, 10->1
                     return min(1.0, max(0.0, score))
-                except ValueError:
+                else:
+                    # Fallback: try to extract any number between 1-10
+                    fallback_match = re.search(r'(\d+)', result)
+                    if fallback_match:
+                        score = int(fallback_match.group(1))
+                        if 1 <= score <= 10:
+                            score = (score - 1) / 9.0
+                            return min(1.0, max(0.0, score))
                     return 0.0
         except Exception as e:
             print(f"Error in LLM response generation: {e}")
@@ -987,13 +1006,29 @@ class GeneralIORewardManager:
 
         prompt = f"""Please evaluate the quality of the following question generation.
 Question: {question}
-Please provide a score from 0.0 to 1.0 where:
-- 1.0 means the question is perfect, complete, and clear
-- 0.8-0.9 means the question is mostly clear but may have minor issues
-- 0.5-0.7 means the question is partially clear but has significant issues
-- 0.1-0.4 means the question has some merit but is largely unclear or irrelevant
-- 0.0 means the question is completely wrong or irrelevant (Also rate as 0.0 if the question is not a valid question)
-Only provide the numeric score (e.g., 0.85)."""
+
+First, analyze the question in the <think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the question clear and well-formed?
+- Is it complete and understandable?
+- Does it make logical sense?
+- Is it relevant and appropriate?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the question is perfect, complete, and clear
+- 8-9 means the question is mostly clear but may have minor issues
+- 5-7 means the question is partially clear but has significant issues
+- 2-4 means the question has some merit but is largely unclear or irrelevant
+- 1 means the question is completely wrong or irrelevant (Also rate as 1 if the question is not a valid question)
+
+<score>X</score> (where X is an integer from 1 to 10)"""
         PrettyPrinter.code_block(f"Generated prompt for question generation evaluation:\n{prompt}")
         return prompt
 
@@ -1009,14 +1044,28 @@ Question/Problem: {question}
 
 Provided Answer: {answer}
 
-Please provide a score from 0.0 to 1.0 where:
-- 1.0 means the answer is perfect, complete, and correct
-- 0.8-0.9 means the answer is mostly correct but may have minor issues
-- 0.5-0.7 means the answer is partially correct but has significant issues
-- 0.1-0.4 means the answer has some merit but is largely incorrect
-- 0.0 means the answer is completely wrong or irrelevant
+First, analyze the answer in the <think> and </think> tags below:
 
-Only provide the numeric score (e.g., 0.85)."""
+<think>
+Consider the following criteria when evaluating:
+- Is the answer correct and accurate?
+- Is it complete and comprehensive?
+- Does it properly address the question?
+- Is it well-structured and clear?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the answer is perfect, complete, and correct
+- 8-9 means the answer is mostly correct but may have minor issues
+- 5-7 means the answer is partially correct but has significant issues
+- 2-4 means the answer has some merit but is largely incorrect
+- 1 means the answer is completely wrong or irrelevant
+
+<score>X</score> (where X is an integer from 1 to 10)"""
         return prompt
 
     def _compute_score_for_gen(self, data_dict: Dict, external_llm_score: float, solver_avg_score: float) -> float:
@@ -1140,14 +1189,28 @@ Question/Problem: {response_data['question']}
 
 Generated Solution: {response_data['response']}
 
-Please provide a score from 0.0 to 1.0 where:
-- 1.0 means the solution is perfect, complete, and correct
-- 0.8-0.9 means the solution is mostly correct but may have minor issues  
-- 0.5-0.7 means the solution is partially correct but has significant issues
-- 0.1-0.4 means the solution has some merit but is largely incorrect
-- 0.0 means the solution is completely wrong or irrelevant
+First, analyze the solution in the <think> and </think> tags below:
 
-Only provide the numeric score (e.g., 0.85)."""
+<think>
+Consider the following criteria when evaluating:
+- Is the solution correct and accurate?
+- Is it complete and comprehensive?
+- Does it properly address the question?
+- Is the reasoning clear and logical?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the solution is perfect, complete, and correct
+- 8-9 means the solution is mostly correct but may have minor issues  
+- 5-7 means the solution is partially correct but has significant issues
+- 2-4 means the solution has some merit but is largely incorrect
+- 1 means the solution is completely wrong or irrelevant
+
+<score>X</score> (where X is an integer from 1 to 10)"""
                         
                         score = self._generate_llm_response(eval_prompt)
                         scores.append(score)

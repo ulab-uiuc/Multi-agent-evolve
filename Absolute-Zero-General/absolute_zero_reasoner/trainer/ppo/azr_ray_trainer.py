@@ -915,13 +915,13 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         # Track global index
         idx = 0
 
-        # ---------- MATH ----------
+        # ---------- FusionBench ----------
         try:
-            math_ds = load_dataset("meta-math/MetaMathQA", split="train")
-            math_samples = random.sample(list(math_ds), k=min(4, len(math_ds)))
-            for item in math_samples:
+            general_data = load_dataset("ulab-ai/FusionBench","train", split="data")
+            general_samples = random.sample(list(general_data), k=min(1000, len(general_data)))
+            for item in general_samples:
                 question = item["query"]
-                answer = item["response"]
+                answer = item["ground_truth"]
                 io_prompt = f"{question}"
                 chosen_references = []
                 io_item = {
@@ -946,84 +946,13 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                 }
                 examples.append(io_item)
                 idx += 1
-            PrettyPrinter.status("LOAD", f"Loaded {len(math_samples)} MATH samples", "success")
+            PrettyPrinter.status("INFO", f"Loaded {len(general_samples)} FusionBench examples", "info")
         except Exception as e:
-            PrettyPrinter.status("WARNING", f"Failed to load MATH: {str(e)}", "warn")
-
-        # ---------- HumanEval ----------
-        try:
-            humaneval_ds = load_dataset("fxmeng/CodeFeedback-Python105K", split="train")
-            humaneval_samples = random.sample(list(humaneval_ds), k=min(4, len(humaneval_ds)))
-            for item in humaneval_samples:
-                question = f"{item['query']}"
-                answer = item['response']
-                io_prompt = question
-                chosen_references = []
-                io_item = {
-                    "data_source": 'gen_general',
-                    "prompt": [{
-                        "role": "user",
-                        "content": io_prompt,
-                    }],
-                    "problem": '',
-                    "question": question,
-                    "ability": "general",
-                    "reward_model": {
-                        "style": "rule",
-                        "ground_truth": answer,
-                    },
-                    "extra_info": {
-                        'split': split,
-                        'index': idx,
-                        'metric': 'gen_general',
-                        'chosen_references': chosen_references,
-                    }
-                }
-                examples.append(io_item)
-                idx += 1
-            PrettyPrinter.status("LOAD", f"Loaded {len(humaneval_samples)} HumanEval samples", "success")
-        except Exception as e:
-            PrettyPrinter.status("WARNING", f"Failed to load HumanEval: {str(e)}", "warn")
-
-        # ---------- MT-Bench ----------
-        try:
-            mtbench_ds = load_dataset("HuggingFaceH4/mt_bench_prompts", split="train")
-            mtbench_samples = random.sample(list(mtbench_ds), k=min(4, len(mtbench_ds)))
-            for item in mtbench_samples:
-                if isinstance(item.get("prompt"), list) and len(item["prompt"]) >= 2:
-                    question = item["prompt"][0]
-                    answer = " "
-                    io_prompt = question
-                    chosen_references = [{"answer": answer}]
-                    io_item = {
-                        "data_source": 'gen_general',
-                        "prompt": [{
-                            "role": "user",
-                            "content": io_prompt,
-                        }],
-                        "problem": '',
-                        "question": question,
-                        "ability": "general",
-                        "reward_model": {
-                            "style": "rule",
-                            "ground_truth": answer,
-                        },
-                        "extra_info": {
-                            'split': split,
-                            'index': idx,
-                            'metric': 'gen_general',
-                            'chosen_references': chosen_references,
-                        }
-                    }
-                    examples.append(io_item)
-                    idx += 1
-            PrettyPrinter.status("LOAD", f"Loaded {len(mtbench_samples)} MT-Bench samples", "success")
-        except Exception as e:
-            PrettyPrinter.status("WARNING", f"Failed to load MT-Bench: {str(e)}", "warn")
+            PrettyPrinter.status("WARNING", f"Failed to load FusionBench: {str(e)}", "warn")
 
         # Shuffle and truncate
         random.shuffle(examples)
-        seed_examples = examples[:100]
+        seed_examples = examples[:1000]
 
         # Upload to ray
         ray.get(self.dataset_manager.add_general_batch.remote(seed_examples, self.global_steps))

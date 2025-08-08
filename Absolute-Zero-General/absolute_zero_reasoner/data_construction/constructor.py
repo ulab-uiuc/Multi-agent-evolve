@@ -4,7 +4,7 @@ from numpy import random
 import pandas as pd
 from transformers import AutoTokenizer
 
-from absolute_zero_reasoner.data_construction.prompts import get_code_problem_generator_prompt, get_code_problem_predictor_prompt, get_general_generator_prompt, get_general_predictor_prompt
+from absolute_zero_reasoner.data_construction.prompts import get_code_problem_generator_prompt, get_code_problem_predictor_prompt, get_general_generator_prompt,get_general_generation_with_reference_prompt get_general_predictor_prompt
 from absolute_zero_reasoner.data_construction.process_data import boxed_instruction, instruction_following
 from absolute_zero_reasoner.utils.code_utils.parsers import replace_main_function_name
 
@@ -64,16 +64,20 @@ def get_gen_general_io_data(
             # 用 numpy 的 choice，并转成 Python list
             chosen_indices = np.random.choice(len(io_data), size=k, replace=False, p=probabilities)
             chosen_references = [io_data[i] for i in chosen_indices]
-
-        io_prompt = instruction_template.format(
-            get_general_generator_prompt(reference_questions=chosen_references)
-        )
-
+        if not chosen_references:
+            io_prompt = instruction_template.format(
+                get_general_generator_prompt(reference_questions=chosen_references)
+            )
+        else:
+            io_prompt = instruction_template.format(
+                get_general_generation_with_reference_prompt(reference_questions=chosen_references)
+            )
         # 提取 question
-        question = extract_question(io_prompt)
-        if not question:
-            # print("No question found in the generated prompt, skipping this item.")
-            continue
+        # question = extract_question(io_prompt.split('### Your Task:')[1].strip())
+        question = io_prompt
+        # if not question:
+        #     # print("No question found in the generated prompt, skipping this item.")
+        #     continue
 
         # 过滤过长样本
         if len(tokenizer(io_prompt)['input_ids']) <= content_max_length:

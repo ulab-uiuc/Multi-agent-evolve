@@ -1,5 +1,62 @@
 from typing import List, Dict, Tuple
 
+general_generation_based_on_reference_prompt = """
+## Task: Create a Challenging and Modified Version of a Reference Task
+
+Given one or more **reference tasks** along with their **ground truth answers**, your goal is to design a **new, more challenging task** by making **controlled perturbations** to the original. The modifications should **increase reasoning depth, introduce extra constraints, or add multi-step dependencies** while keeping the problem **self-contained and solvable**.
+
+You must preserve the **core domain or reasoning type** of the reference (e.g., if it’s a logic puzzle, keep it a logic puzzle) but ensure the **surface content and structure are new**. You may:
+- Add additional constraints or intermediate steps
+- Replace elements with analogous but more complex structures
+- Introduce distractors or traps that require careful reasoning
+- Change numerical values, symbolic rules, or conditions to increase difficulty
+- Combine multiple references into one composite, coherent challenge
+
+---
+
+### Task Requirements:
+
+- The modified task must be:
+  * **Self-contained** and clearly described
+  * **Significantly different in surface form** from the reference, but same reasoning type
+  * **More challenging** — requiring additional steps or deeper analysis than the reference
+  * **Deterministic** or tightly constrained
+  * **Free from cultural bias, real-time info, or factual recall**
+
+- Accepted Domains:
+  * Logic puzzles, paradoxes, analogical reasoning
+  * Pattern-based math or symbolic challenges
+  * Spatial or constraint-based planning
+  * Structured or constrained writing
+  * Multi-agent or multi-state reasoning
+  * Instruction-following with hidden traps
+
+- Avoid:
+  * Pure trivia or subjective writing
+  * Ambiguity or taste-based prompts
+  * Dependency on web or recent events
+  * Unsuitable open-endedness
+
+---
+
+### Output Format:
+
+- `<think>`: Describe your reasoning for how you modified the reference, what reasoning it tests, and why it’s harder.
+- `<question>`: The final new task to present to the test subject.
+
+### Output Template:
+
+```<think>
+[Explain modifications from the reference and why they increase difficulty — e.g., added constraints, distractors, multi-step dependencies.]
+</think>
+
+<question>
+[Write the modified, more challenging task in full, ready to present. Ensure it is solvable without external info.]
+</question>
+
+### Reference Questions:
+"""
+
 general_generation_prompt = """
 ## Task: Create a Challenging and Original Task
 
@@ -411,6 +468,15 @@ remove_input_from_snippet_prompt = "- Do not have the test input anywhere in the
 
 remove_singleton_variables_prompt = "- All variable declarations must be inside the main function `f` or within functions `f` make calls to. Any variables declared outside of functions will be removed.\n"
 
+def get_general_generation_with_reference_prompt(
+        reference_questions: List[Dict[str, str]],
+) -> str:
+    # Generate a general prompt for the generator based on reference questions
+    reference_questions_string = ""
+    for i, question in enumerate(reference_questions):
+        reference_questions_string += f"<question>\n{question['question']}\n</question>\n\n Ground Truth Answer: {question['answer']}\n\n"
+
+    return general_generation_based_on_reference_prompt + reference_questions_string + "\n### Your Task:\nCreate a Challenging and Modified Version of the Reference Task. Remember to structure your response in the specified format.\n\n---\n\n### Output Template:\n```<think>\n[Your reasoning about the task]\n</think>\n\n<question>\n[Your modified task]\n</question>```"
 def get_general_generator_prompt(
         reference_questions: List[Dict[str, str]],
 ) -> str:
