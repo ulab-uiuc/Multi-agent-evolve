@@ -704,7 +704,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         return iter(DataLoader(
             dataset=gen_train_dataset,
             batch_size=self.config.data.train_batch_size,
-            drop_last=True,
+            drop_last=False,
             collate_fn=collate_fn,
             sampler=sampler
         ))
@@ -1109,6 +1109,9 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     problem_type='general',
                     data_len=data_len,
                 )
+                num_batches = len(gen_general_dataloader._loader) if hasattr(gen_general_dataloader, "_loader") else len(gen_general_dataloader)
+                if num_batches < self.config.azr.data_selection_strategy.update_iteration:
+                    PrettyPrinter.status("WARN", f"gen_general 只有 {num_batches} 批，不足 {self.config.azr.data_selection_strategy.update_iteration}；将重建/降级。", "warn")
             for _ in range(self.config.azr.data_selection_strategy.update_iteration):
                 metrics = {}
                 timing_raw = {}
@@ -1123,7 +1126,15 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
                     if 'general' in self.config.azr.problem_types:
                         if not self.pretrain_pred:
-                            batch_dict = next(gen_general_dataloader)
+                            try:
+                                batch_dict = next(gen_general_dataloader)
+                            except StopIteration:
+                                gen_general_dataloader = self._create_train_gen_dataloader(
+                                    problem_type='general',
+                                    data_len=data_len,
+                                    dataset_key='general',
+                                )
+                                batch_dict = next(gen_general_dataloader)
                             gen_batch: DataProto = DataProto.from_single_dict(batch_dict)
                             gen_batch, metrics = self._compute_batch(gen_batch, metrics, timing_raw, problem_type='gen_general')
                             if self.config.azr.train_propose:

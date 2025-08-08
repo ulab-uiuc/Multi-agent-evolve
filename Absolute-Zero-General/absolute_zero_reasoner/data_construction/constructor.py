@@ -17,6 +17,9 @@ def extract_question(text: str) -> str:
     end = text.find('</question>', start)
     return text[start:end].strip() if start != -1 and end != -1 else text.strip()
 
+import numpy as np
+import pandas as pd
+
 def get_gen_general_io_data(
     io_data: List[Dict],
     target_data_len: int,
@@ -24,74 +27,81 @@ def get_gen_general_io_data(
     io_n: int,
     output_path: str,
     split: str,
-    tokenizer: AutoTokenizer,
+    tokenizer,  # 不强依赖类型声明，避免导入问题
     weights: List[float] = None,
     include_references: bool = True,
 ):
     return_io_data = []
     instruction_template = '{}'
+
+    # 兜底：空数据直接写空表并返回
+    if not io_data:
+        pd.DataFrame(return_io_data).to_parquet(output_path)
+        return
+
+    # 概率分布
     if weights is None:
-        probabilities = [1.0 / len(io_data)] * len(io_data)
+        probabilities = np.full(len(io_data), 1.0 / len(io_data))
     else:
-        # Normalize weights to form a probability distribution
-        probabilities = [float(w)/sum(weights) for w in weights]
+        w = np.asarray(weights, dtype=float)
+        s = w.sum()
+        if s <= 0 or len(w) != len(io_data) or not np.isfinite(s):
+            probabilities = np.full(len(io_data), 1.0 / len(io_data))
+        else:
+            probabilities = w / s
 
     idx = 0
+    max_attempts = max(5 * target_data_len, 100)  # 防止无限循环
+    attempts = 0
 
-    while len(return_io_data) < target_data_len:
+    while len(return_io_data) < target_data_len and attempts < max_attempts:
+        attempts += 1
+
         if not include_references:
             chosen_references = []
         else:
-            chosen_references = random.choice(io_data, size=min(io_n, len(io_data)), replace=False, p=probabilities)
+            k = min(io_n, len(io_data))
+            # 用 numpy 的 choice，并转成 Python list
+            chosen_indices = np.random.choice(len(io_data), size=k, replace=False, p=probabilities)
+            chosen_references = [io_data[i] for i in chosen_indices]
 
         io_prompt = instruction_template.format(
-            get_general_generator_prompt(
-                reference_questions=chosen_references,
-            )
+            get_general_generator_prompt(reference_questions=chosen_references)
         )
-        print(f"Generated prompt: {io_prompt}")
-        # Extract the question from the prompt
+
+        # 提取 question
         question = extract_question(io_prompt)
         if not question:
-            print("No question found in the generated prompt, skipping this item.")
+            # print("No question found in the generated prompt, skipping this item.")
             continue
 
-        # since we have abundant judge data, we can afford to filter out some data
+        # 过滤过长样本
         if len(tokenizer(io_prompt)['input_ids']) <= content_max_length:
             io_item = {
                 "data_source": 'gen_general',
-                "prompt": [{
-                    "role": "user",
-                    "content": io_prompt,
-                }],
+                "prompt": [{"role": "user", "content": io_prompt}],
                 "problem": '',
                 "question": question,
                 "ability": "general",
-                "reward_model": {
-                    "style": "rule",
-                    "ground_truth": '',
-                },
+                "reward_model": {"style": "rule", "ground_truth": ''},
                 "extra_info": {
                     'split': split,
                     'index': idx,
                     'metric': 'gen_general',
+                    # 确保可序列化
                     'chosen_references': chosen_references,
                 }
             }
             return_io_data.append(io_item)
             idx += 1
 
-        if len(return_io_data) >= target_data_len:
-            break
-    
-    # if io_data is not full, we sample upsample random data
+    # 不足就上采样补齐（前提：io_data 非空）
     while len(return_io_data) < target_data_len:
-        io_item = io_data[random.randint(0, len(io_data))]
-        return_io_data.append(io_item)
+        j = np.random.randint(0, len(io_data))  # 上界开区间，不会越界
+        return_io_data.append(io_data[j])
 
-    # output to parquet
-    df = pd.DataFrame(return_io_data)
-    df.to_parquet(output_path)
+    # 输出到 parquet
+    pd.DataFrame(return_io_data).to_parquet(output_path)
 
 def get_pred_general_io_data(
     io_data: List[Dict],
