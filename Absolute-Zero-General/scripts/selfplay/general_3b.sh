@@ -53,9 +53,9 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     trainer.experiment_name='general_io_3b_withref' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
-    trainer.save_freq=10 \
-    +trainer.remove_previous_ckpt_in_save=True \
-    +trainer.del_local_ckpt_after_load=True \
+    trainer.save_freq=25 \
+    +trainer.remove_previous_ckpt_in_save=False \
+    +trainer.del_local_ckpt_after_load=False \
     trainer.test_freq=1000 \
     +trainer.val_before_train=False \
     reward_fn.extraction_type=boxed \
