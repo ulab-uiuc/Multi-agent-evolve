@@ -113,7 +113,7 @@ trainer:
   critic_warmup: 0
   total_training_steps: 1000
   default_hdfs_dir: null
-  default_local_dir: checkpoints/general/${trainer.project_name}/${trainer.experiment_name}
+  default_local_dir: /data/yidingw/checkpoints/general/${trainer.project_name}/${trainer.experiment_name}
 
 
 critic:
