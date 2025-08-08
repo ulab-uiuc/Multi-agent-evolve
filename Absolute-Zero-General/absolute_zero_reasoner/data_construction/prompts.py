@@ -474,7 +474,12 @@ def get_general_generation_with_reference_prompt(
     # Generate a general prompt for the generator based on reference questions
     reference_questions_string = ""
     for i, question in enumerate(reference_questions):
-        reference_questions_string += f"<question>\n{question['question']}\n</question>\n\n Ground Truth Answer: {question['reward_model']['ground_truth']}\n\n"
+        reward_model = question.get('reward_model', {})
+        if reward_model.get('ground_truth') is not None:
+            ground_truth = reward_model['ground_truth']
+        else:
+            ground_truth = "N/A"
+        reference_questions_string += f"<question>\n{question['question']}\n</question>\n\n Ground Truth Answer: {ground_truth}\n\n"
 
     return general_generation_based_on_reference_prompt + reference_questions_string + "\n### Your Task:\nCreate a Challenging and Modified Version of the Reference Task. Remember to structure your response in the specified format.\n\n---\n\n### Output Template:\n```<think>\n[Your reasoning about the task]\n</think>\n\n<question>\n[Your modified task]\n</question>```"
 def get_general_generator_prompt(
