@@ -1429,7 +1429,7 @@ Then provide a score from 1 to 10 between <score> and </score> where:
                             'uid': data_dict['uid'],
                         })
                     else:
-                        reward_tensor[i, valid_response_length - 1] = -0.5
+                        reward_tensor[i, valid_response_length - 1] = llm_score
                 elif self.split == 'test':
                     reward_tensor[i, valid_response_length - 1] = llm_score
                     if llm_score > 0.5:
