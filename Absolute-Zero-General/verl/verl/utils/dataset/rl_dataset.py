@@ -99,23 +99,54 @@ class RLHFDataset(Dataset):
             self.parquet_files[i] = copy_local_path_from_hdfs(src=parquet_file, cache_dir=self.cache_dir)
 
     def _read_files_and_tokenize(self):
-        dataframes = []
-        for parquet_file in self.parquet_files:
-            # read parquet files and cache
-            dataframe = pd.read_parquet(parquet_file)
-            dataframes.append(dataframe)
+        dataframes = [pd.read_parquet(p) for p in self.parquet_files]
         self.dataframe = pd.concat(dataframes)
+        print(f'original dataset len: {len(self.dataframe)}{". Source: " + self.extra_source_key if self.extra_source_key else ""}')
 
-        print(f'original dataset len: {len(self.dataframe)}')
+        tok = self.tokenizer
+        key = self.prompt_key
 
-        # filter out too long prompts
-        tokenizer = self.tokenizer
-        prompt_key = self.prompt_key
-        self.dataframe = self.dataframe[self.dataframe.apply(lambda doc: len(
-            tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True)) <= self.max_prompt_length,
-                                                             axis=1)]
+        def prompt_token_len(chat):
+            # 优先走 tokenize=True（新版本支持）
+            try:
+                out = tok.apply_chat_template(
+                    chat, add_generation_prompt=True, tokenize=True
+                )
+                # 可能返回 list[int] 或 dict 各版本略不同
+                if isinstance(out, dict):
+                    ids = out["input_ids"]
+                else:
+                    ids = out
+                return len(ids)
+            except TypeError:
+                # 老版本兼容：先得到字符串再 tokenize
+                text = tok.apply_chat_template(
+                    chat, add_generation_prompt=True, tokenize=False
+                )
+                return len(tok(text)["input_ids"])
 
-        print(f'filter dataset len: {len(self.dataframe)}')
+        mask = self.dataframe[key].apply(prompt_token_len) <= self.max_prompt_length
+        self.dataframe = self.dataframe[mask]
+
+        print(f'filter dataset len: {len(self.dataframe)}{". Source: " + self.extra_source_key if self.extra_source_key else ""}')
+    # def _read_files_and_tokenize(self):
+    #     dataframes = []
+    #     for parquet_file in self.parquet_files:
+    #         # read parquet files and cache
+    #         dataframe = pd.read_parquet(parquet_file)
+    #         dataframes.append(dataframe)
+    #     self.dataframe = pd.concat(dataframes)
+
+    #     print(f'original dataset len: {len(self.dataframe)}')
+
+    #     # filter out too long prompts
+    #     tokenizer = self.tokenizer
+    #     prompt_key = self.prompt_key
+    #     self.dataframe = self.dataframe[self.dataframe.apply(lambda doc: len(
+    #         tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True)) <= self.max_prompt_length,
+    #                                                          axis=1)]
+
+    #     print(f'filter dataset len: {len(self.dataframe)}')
 
     def resume_dataset_state(self):
         self.serialize_dataset = False if hasattr(self, 'original_parquet_files') else True

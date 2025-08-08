@@ -704,7 +704,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         return iter(DataLoader(
             dataset=gen_train_dataset,
             batch_size=self.config.data.train_batch_size,
-            drop_last=False,
+            drop_last=True,
             collate_fn=collate_fn,
             sampler=sampler
         ))
