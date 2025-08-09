@@ -904,6 +904,7 @@ class GeneralIORewardManager:
         top_p: float = 0.95,
         stream: bool = True,
         boxed_retry: bool = False,
+        train_judge: bool = False,
         **kwargs
     ):
         self.tokenizer = tokenizer
@@ -921,6 +922,7 @@ class GeneralIORewardManager:
         self.top_p = top_p
         self.stream = stream
         self.boxed_retry = boxed_retry
+        self.train_judge = train_judge
         
         # Initialize the external LLM client
         self.client = OpenAI(
@@ -930,70 +932,75 @@ class GeneralIORewardManager:
         
     def _generate_llm_response(self, prompt: str) -> float:
         """Call the external LLM for evaluation."""
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.temperature,
-                top_p=self.top_p,
-                max_tokens=self.max_tokens,
-                stream=self.stream
-            )
-            
-            if self.stream:
-                result = ""
-                for chunk in completion:
-                    if chunk.choices[0].delta.content is not None:
-                        result += chunk.choices[0].delta.content
+        if self.train_judge:
+            # Use a judge LLM to generate evaluation, this LLM will receive a reward as an individual task
+            # Judge will need an individual pool of data
+            raise NotImplementedError("Judge LLM evaluation is not implemented yet.")
+        else:
+            try:
+                completion = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    max_tokens=self.max_tokens,
+                    stream=self.stream
+                )
                 
-                # Extract score from result
-                result = result.strip()
-                print(f"LLM Response: {result}")  # Debugging output
-                
-                # Try to extract score from <score></score> tags
-                import re
-                score_match = re.search(r'<score>(\d+)</score>', result, re.IGNORECASE)
-                if score_match:
-                    score = int(score_match.group(1))
-                    # Convert from 1-10 scale to 0-1 scale
-                    score = (score - 1) / 9.0  # Maps 1->0, 10->1
-                    return min(1.0, max(0.0, score))
+                if self.stream:
+                    result = ""
+                    for chunk in completion:
+                        if chunk.choices[0].delta.content is not None:
+                            result += chunk.choices[0].delta.content
+                    
+                    # Extract score from result
+                    result = result.strip()
+                    print(f"LLM Response: {result}")  # Debugging output
+                    
+                    # Try to extract score from <score></score> tags
+                    import re
+                    score_match = re.search(r'<score>(\d+)</score>', result, re.IGNORECASE)
+                    if score_match:
+                        score = int(score_match.group(1))
+                        # Convert from 1-10 scale to 0-1 scale
+                        score = (score - 1) / 9.0  # Maps 1->0, 10->1
+                        return min(1.0, max(0.0, score))
+                    else:
+                        # Fallback: try to extract any number between 1-10
+                        fallback_match = re.search(r'(\d+)', result)
+                        if fallback_match:
+                            score = int(fallback_match.group(1))
+                            if 1 <= score <= 10:
+                                score = (score - 1) / 9.0
+                                return min(1.0, max(0.0, score))
+                        return 0.0
                 else:
-                    # Fallback: try to extract any number between 1-10
-                    fallback_match = re.search(r'(\d+)', result)
-                    if fallback_match:
-                        score = int(fallback_match.group(1))
-                        if 1 <= score <= 10:
-                            score = (score - 1) / 9.0
-                            return min(1.0, max(0.0, score))
-                    return 0.0
-            else:
-                result = completion.choices[0].message.content.strip()
-                print(f"LLM Response: {result}")  # Debugging output
-                
-                # Try to extract score from <score></score> tags
-                import re
-                score_match = re.search(r'<score>(\d+)</score>', result, re.IGNORECASE)
-                if score_match:
-                    score = int(score_match.group(1))
-                    # Convert from 1-10 scale to 0-1 scale
-                    score = (score - 1) / 9.0  # Maps 1->0, 10->1
-                    return min(1.0, max(0.0, score))
-                else:
-                    # Fallback: try to extract any number between 1-10
-                    fallback_match = re.search(r'(\d+)', result)
-                    if fallback_match:
-                        score = int(fallback_match.group(1))
-                        if 1 <= score <= 10:
-                            score = (score - 1) / 9.0
-                            return min(1.0, max(0.0, score))
-                    return 0.0
-        except Exception as e:
-            print(f"Error in LLM response generation: {e}")
-            return 0.0
+                    result = completion.choices[0].message.content.strip()
+                    print(f"LLM Response: {result}")  # Debugging output
+                    
+                    # Try to extract score from <score></score> tags
+                    import re
+                    score_match = re.search(r'<score>(\d+)</score>', result, re.IGNORECASE)
+                    if score_match:
+                        score = int(score_match.group(1))
+                        # Convert from 1-10 scale to 0-1 scale
+                        score = (score - 1) / 9.0  # Maps 1->0, 10->1
+                        return min(1.0, max(0.0, score))
+                    else:
+                        # Fallback: try to extract any number between 1-10
+                        fallback_match = re.search(r'(\d+)', result)
+                        if fallback_match:
+                            score = int(fallback_match.group(1))
+                            if 1 <= score <= 10:
+                                score = (score - 1) / 9.0
+                                return min(1.0, max(0.0, score))
+                        return 0.0
+            except Exception as e:
+                print(f"Error in LLM response generation: {e}")
+                return 0.0
 
     def _generate_prompt_for_gen(self, data_dict: Dict) -> str:
-        """Generate the LLM as judge prompt for evaluating the question genration quality."""
+        """Generate the LLM as judge prompt for evaluating the question generation quality."""
         def extract_question(text):
             pattern = r'<question>(.*?)</question>'
             matches = re.findall(pattern, text, re.DOTALL)
@@ -1240,8 +1247,6 @@ Then provide a score from 1 to 10 between <score> and </score> where:
         final_score = self._compute_score_for_pred(external_llm_score)
         return final_score
 
-
-
     def _get_data_dict(self, data_item: DataProtoItem, problem_type: str, banned_words: List[str], uid: str, banned_assertion_keywords: List[str]) -> Dict:
         """
         Extract data dictionary for GeneralIO tasks.
@@ -1443,7 +1448,22 @@ Then provide a score from 1 to 10 between <score> and </score> where:
                 all_scores['llm_judge_score'].append(llm_score)
             
             all_scores['accuracy'] = all_scores['llm_judge_score']  # For compatibility
-        
+        elif problem_type.startswith('judge_solver'):
+            PrettyPrinter.section_header("Computing Judging Solver Rewards for GeneralIO Tasks")
+
+            # For a naive implementation, we use the toy reward now
+            for i, data_dict in enumerate(data_dicts):
+                valid_response_length = data_dict['valid_response_length']
+                reward_tensor[i, valid_response_length - 1] = 0.5
+            all_scores['accuracy'] = [0.5] * len(data_dicts)
+        elif problem_type.startswith('judge_proposer'):
+            PrettyPrinter.section_header("Computing Judging Proposer Rewards for GeneralIO Tasks")
+
+            # For a naive implementation, we use the toy reward now
+            for i, data_dict in enumerate(data_dicts):
+                valid_response_length = data_dict['valid_response_length']
+                reward_tensor[i, valid_response_length - 1] = 0.5
+            all_scores['accuracy'] = [0.5] * len(data_dicts)
         else:
             # For other cases or when rollout_actor_wg is None
             PrettyPrinter.section_header("Computing Default Rewards for GeneralIO Tasks")
