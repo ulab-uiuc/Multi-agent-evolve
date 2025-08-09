@@ -999,6 +999,70 @@ class GeneralIORewardManager:
                 print(f"Error in LLM response generation: {e}")
                 return 0.0
 
+    def _generate_prompt_for_pred_gen(self, data_dict: Dict) -> str:
+        """Generate the LLM as judge prompt for evaluating the question and the answer quality at the same time. Extraction will be done elsewhere."""
+        def extract_question(text):
+            pattern = r'<question>(.*?)</question>'
+            matches = re.findall(pattern, text, re.DOTALL)
+            return matches
+        question = data_dict.get('question', '')
+        answer = data_dict.get('answer', data_dict.get('generation', '')).split('[Your final answer to the question, structured and clear, without restating the question]')[-1]
+        PrettyPrinter.code_block(f"Generated prompt for question and answer evaluation:\n{question}\n{answer}")
+        prompt = f"""Please evaluate the quality of the following question and answer pair generation.
+Question: {question}
+
+Provided Answer: {answer}
+
+First, analyze the question in the <think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the question clear and well-formed?
+- Is it complete and understandable?
+- Does it make logical sense?
+- Is it relevant and appropriate?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the question is perfect, complete, and clear
+- 8-9 means the question is mostly clear but may have minor issues
+- 5-7 means the question is partially clear but has significant issues
+- 2-4 means the question has some merit but is largely unclear or irrelevant
+- 1 means the question is completely wrong or irrelevant (Also rate as 1 if the question is not a valid question)
+
+<score>X</score> (where X is an integer from 1 to 10)
+
+Then analyze the answer in the <think> and </think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the answer correct and accurate?
+- Is it complete and comprehensive?
+- Does it properly address the question?
+- Is it well-structured and clear?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the answer is perfect, complete, and correct
+- 8-9 means the answer is mostly correct but may have minor issues
+- 5-7 means the answer is partially correct but has significant issues
+- 2-4 means the answer has some merit but is largely incorrect
+- 1 means the answer is completely wrong or irrelevant
+
+<score>X</score> (where X is an integer from 1 to 10)
+
+"""
+        PrettyPrinter.code_block(f"Generated prompt for complete evaluation:\n{prompt}")
+        return prompt
+
     def _generate_prompt_for_gen(self, data_dict: Dict) -> str:
         """Generate the LLM as judge prompt for evaluating the question generation quality."""
         def extract_question(text):
