@@ -959,16 +959,35 @@ class GeneralIORewardManager:
                     
                     # Try to extract score from <score></score> tags
                     import re
-                    score_match = re.search(r'<score>(\d+)</score>', result, re.IGNORECASE)
-                    if score_match:
+                    score_match = re.findall(r'<score>(\d+)</score>', result, re.IGNORECASE)
+                    if len(score_match) > 1:
+                        print("Multiple score available in LLM response, make sure this is what you want.")
+                        assert len(score_match) == 2, "Expected exactly two scores in the response."
+                        score_list = []
+                        for score in score_match:
+                            score = int(score)
+                            score = (score - 1) / 9.0
+                            score_list.append(min(1.0, max(0.0, score)))
+                        return score_list
+                    elif score_match:
                         score = int(score_match.group(1))
                         # Convert from 1-10 scale to 0-1 scale
                         score = (score - 1) / 9.0  # Maps 1->0, 10->1
                         return min(1.0, max(0.0, score))
                     else:
                         # Fallback: try to extract any number between 1-10
-                        fallback_match = re.search(r'(\d+)', result)
-                        if fallback_match:
+                        fallback_match = re.findall(r'(\d+)', result)
+                        if len(fallback_match) > 1:
+                            print("Multiple score available in LLM response, make sure this is what you want.")
+                            assert len(fallback_match) == 2, "Expected exactly two scores in the response."
+                            score_list = []
+                            for score in fallback_match:
+                                score = int(score)
+                                if 1 <= score <= 10:
+                                    score = (score - 1) / 9.0
+                                    score_list.append(min(1.0, max(0.0, score)))
+                            return score_list
+                        elif fallback_match:
                             score = int(fallback_match.group(1))
                             if 1 <= score <= 10:
                                 score = (score - 1) / 9.0
@@ -980,16 +999,35 @@ class GeneralIORewardManager:
                     
                     # Try to extract score from <score></score> tags
                     import re
-                    score_match = re.search(r'<score>(\d+)</score>', result, re.IGNORECASE)
-                    if score_match:
+                    score_match = re.findall(r'<score>(\d+)</score>', result, re.IGNORECASE)
+                    if len(score_match) > 1:
+                        print("Multiple score available in LLM response, make sure this is what you want.")
+                        assert len(score_match) == 2, "Expected exactly two scores in the response."
+                        score_list = []
+                        for score in score_match:
+                            score = int(score)
+                            score = (score - 1) / 9.0
+                            score_list.append(min(1.0, max(0.0, score)))
+                        return score_list
+                    elif score_match:
                         score = int(score_match.group(1))
                         # Convert from 1-10 scale to 0-1 scale
                         score = (score - 1) / 9.0  # Maps 1->0, 10->1
                         return min(1.0, max(0.0, score))
                     else:
                         # Fallback: try to extract any number between 1-10
-                        fallback_match = re.search(r'(\d+)', result)
-                        if fallback_match:
+                        fallback_match = re.findall(r'(\d+)', result)
+                        if len(fallback_match) > 1:
+                            print("Multiple score available in LLM response, make sure this is what you want.")
+                            assert len(fallback_match) == 2, "Expected exactly two scores in the response."
+                            score_list = []
+                            for score in fallback_match:
+                                score = int(score)
+                                if 1 <= score <= 10:
+                                    score = (score - 1) / 9.0
+                                    score_list.append(min(1.0, max(0.0, score)))
+                            return score_list
+                        elif fallback_match:
                             score = int(fallback_match.group(1))
                             if 1 <= score <= 10:
                                 score = (score - 1) / 9.0
@@ -1487,6 +1525,43 @@ Then provide a score from 1 to 10 between <score> and </score> where:
                 
                 # Get LLM judge score directly
                 llm_score = self._generate_llm_response(self._generate_prompt_for_pred(data_dict))
+                
+                if self.split == 'train':
+                    if llm_score > 0.5:  # Consider scores > 0.5 as correct
+                        reward_tensor[i, valid_response_length - 1] = llm_score
+                        correct_predictions.append({
+                            'question': data_dict.get('question', ''),
+                            'answer': data_dict.get('answer', ''),
+                            'thought': data_dict.get('thought', ''),
+                            'uid': data_dict['uid'],
+                        })
+                    else:
+                        reward_tensor[i, valid_response_length - 1] = llm_score
+                elif self.split == 'test':
+                    reward_tensor[i, valid_response_length - 1] = llm_score
+                    if llm_score > 0.5:
+                        correct_predictions.append({
+                            'question': data_dict.get('question', ''),
+                            'answer': data_dict.get('answer', ''),
+                            'thought': data_dict.get('thought', ''),
+                            'uid': data_dict['uid'],
+                        })
+                
+                all_scores['llm_judge_score'].append(llm_score)
+            
+            all_scores['accuracy'] = all_scores['llm_judge_score']  # For compatibility
+        elif problem_type.startswith('pred_gen'):
+            PrettyPrinter.section_header("Computing Prediction and Generation Rewards for GeneralIO Tasks in a single inference")
+            
+            # For prediction generation tasks, use LLM judge score directly
+            for i, data_dict in enumerate(data_dicts):
+                valid_response_length = data_dict['valid_response_length']
+                
+                # Get LLM judge score directly
+                llm_score = self._generate_llm_response(self._generate_prompt_for_pred_gen(data_dict))
+
+                gen_score = llm_score[0]
+                pred_score = llm_score[1]
                 
                 if self.split == 'train':
                     if llm_score > 0.5:  # Consider scores > 0.5 as correct
