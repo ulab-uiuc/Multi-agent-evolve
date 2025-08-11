@@ -121,5 +121,5 @@ DEFAULT_BENCHMARK_CONFIG = {
     'validation_dir': './validation_datasets',
     'default_benchmarks': ['math', 'gsm8k', 'truthfulqa', 'arc_challenge','arc_easy',],
     'evaluation_frequency': 100,  # Evaluate every 100 steps
-    'max_samples_per_benchmark': 10,  # Limit samples for faster evaluation
+    'max_samples_per_benchmark': 100,  # Limit samples for faster evaluation
 }
