@@ -707,33 +707,72 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                 max_tokens=500
             )
             
-            # Create benchmark dataset
-            max_samples = self.config.get('benchmark_max_samples', DEFAULT_BENCHMARK_CONFIG['max_samples_per_benchmark'])
+            # Create benchmark dataset with per-benchmark sampling
+            max_samples_per_benchmark = self.config.get('benchmark_max_samples', DEFAULT_BENCHMARK_CONFIG['max_samples_per_benchmark'])
             
-            benchmark_dataset = RLHFDataset(
-                parquet_files=benchmark_files,
-                tokenizer=self.tokenizer,
-                prompt_key=self.config.data.prompt_key,
-                max_prompt_length=self.config.data.get('max_validation_prompt_length', 8192),
-                filter_prompts=True,
-                return_raw_chat=self.config.data.get('return_raw_chat', False),
-                truncation='error',
-                extra_source_key="benchmark"
-            )
+            print(f"Loading benchmarks with max {max_samples_per_benchmark} samples per benchmark:")
             
-            # Limit dataset size if specified
-            if max_samples and len(benchmark_dataset) > max_samples:
-                benchmark_dataset = torch.utils.data.Subset(benchmark_dataset, range(max_samples))
+            # Collect individual benchmark datasets with proper sampling
+            benchmark_datasets = []
+            total_samples = 0
             
-            self.benchmark_dataloader = DataLoader(
-                dataset=benchmark_dataset,
-                batch_size=min(len(benchmark_dataset), 32),  # Use reasonable batch size
-                shuffle=False,
-                drop_last=False,
-                collate_fn=collate_fn
-            )
+            for benchmark_file in benchmark_files:
+                try:
+                    # Load single benchmark dataset
+                    single_benchmark_dataset = RLHFDataset(
+                        parquet_files=[benchmark_file],
+                        tokenizer=self.tokenizer,
+                        prompt_key=self.config.data.prompt_key,
+                        max_prompt_length=self.config.data.get('max_validation_prompt_length', 8192),
+                        filter_prompts=True,
+                        return_raw_chat=self.config.data.get('return_raw_chat', False),
+                        truncation='error',
+                        extra_source_key=f"benchmark_{benchmark_file.split('/')[-1].split('.')[0]}"
+                    )
+                    
+                    benchmark_size = len(single_benchmark_dataset)
+                    benchmark_name = benchmark_file.split('/')[-1].split('.')[0]
+                    
+                    # Apply per-benchmark sampling limit
+                    if max_samples_per_benchmark and benchmark_size > max_samples_per_benchmark:
+                        # Create subset with limited samples
+                        indices = torch.randperm(benchmark_size)[:max_samples_per_benchmark]
+                        limited_dataset = torch.utils.data.Subset(single_benchmark_dataset, indices)
+                        benchmark_datasets.append(limited_dataset)
+                        actual_size = max_samples_per_benchmark
+                        print(f"  {benchmark_name}: {actual_size}/{benchmark_size} samples (limited)")
+                    else:
+                        benchmark_datasets.append(single_benchmark_dataset)
+                        actual_size = benchmark_size
+                        print(f"  {benchmark_name}: {actual_size}/{benchmark_size} samples")
+                    
+                    total_samples += actual_size
+                    
+                except Exception as e:
+                    print(f"Warning: Failed to load benchmark {benchmark_file}: {e}")
+                    continue
             
-            print(f"Benchmark evaluation setup complete. Dataset size: {len(benchmark_dataset)}")
+            # Combine all benchmark datasets
+            if benchmark_datasets:
+                benchmark_dataset = torch.utils.data.ConcatDataset(benchmark_datasets)
+                print(f"Total benchmark samples: {total_samples}")
+            else:
+                print("Warning: No benchmark datasets loaded successfully")
+                benchmark_dataset = None
+            
+            if benchmark_dataset is not None:
+                self.benchmark_dataloader = DataLoader(
+                    dataset=benchmark_dataset,
+                    batch_size=min(len(benchmark_dataset), 32),  # Use reasonable batch size
+                    shuffle=False,
+                    drop_last=False,
+                    collate_fn=collate_fn
+                )
+                
+                print(f"Benchmark evaluation setup complete. Dataset size: {len(benchmark_dataset)}")
+            else:
+                self.benchmark_dataloader = None
+                print("No benchmark datasets available for evaluation")
             
         except Exception as e:
             print(f"Error setting up benchmark evaluation: {e}")
