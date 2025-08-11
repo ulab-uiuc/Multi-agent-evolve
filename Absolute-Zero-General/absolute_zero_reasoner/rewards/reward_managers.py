@@ -1677,81 +1677,104 @@ Then determine if the model's answer is correct:
             metrics: Dictionary of evaluation metrics
         """
         
-        reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
-        
-        all_scores = defaultdict(list)
-        correct_predictions = []
-        
-        PrettyPrinter.section_header("Benchmark Evaluation")
-        
-        for i in range(len(data)):
-            data_item = data[i]
+        try:
+            reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
             
-            # Extract information
-            prompt_data = data_item.non_tensor_batch.get('prompt', [])
-            question = self._get_question_from_prompt(prompt_data)
-            ground_truth = data_item.non_tensor_batch.get('answer', '')
-            data_source = data_item.non_tensor_batch.get('data_source', 'unknown')
-            extra_info = data_item.non_tensor_batch.get('extra_info', {})
-            metric_type = extra_info.get('metric', 'general_accuracy')
+            all_scores = defaultdict(list)
+            correct_predictions = []
             
-            # Get model generation
-            response_ids = data_item.batch['responses']
-            generation = self.tokenizer.decode(response_ids, skip_special_tokens=True)
-            model_answer = self._extract_model_answer(generation)
+            PrettyPrinter.section_header("Benchmark Evaluation")
             
-            # Evaluate using LLM
-            score = self._generate_llm_evaluation(question, model_answer, ground_truth, metric_type)
+            data_length = len(data)
+            PrettyPrinter.status("Debug", f"Data length: {data_length}", "info")
+            PrettyPrinter.status("Debug", f"Data type: {type(data)}", "info")
             
-            # Store score in reward tensor (at the last position)
-            valid_response_length = data_item.batch['attention_mask'][len(data_item.batch['prompts']):].sum()
-            if valid_response_length > 0:
-                reward_tensor[i, valid_response_length - 1] = score
-            else:
-                reward_tensor[i, -1] = score
+            for i in range(data_length):
+                try:
+                    PrettyPrinter.status("Debug", f"Processing item {i}", "info")
+                    data_item = data[i]
+                    PrettyPrinter.status("Debug", f"Data item type: {type(data_item)}", "info")
+                    
+                    # Extract information
+                    prompt_data = data_item.non_tensor_batch.get('prompt', [])
+                    question = self._get_question_from_prompt(prompt_data)
+                    ground_truth = data_item.non_tensor_batch.get('answer', '')
+                    data_source = data_item.non_tensor_batch.get('data_source', 'unknown')
+                    extra_info = data_item.non_tensor_batch.get('extra_info', {})
+                    metric_type = extra_info.get('metric', 'general_accuracy')
+                    
+                    # Get model generation
+                    response_ids = data_item.batch['responses']
+                    generation = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+                    model_answer = self._extract_model_answer(generation)
+                    
+                    # Evaluate using LLM
+                    score = self._generate_llm_evaluation(question, model_answer, ground_truth, metric_type)
+                    
+                    # Store score in reward tensor (at the last position)
+                    valid_response_length = data_item.batch['attention_mask'][len(data_item.batch['prompts']):].sum()
+                    if valid_response_length > 0:
+                        reward_tensor[i, valid_response_length - 1] = score
+                    else:
+                        reward_tensor[i, -1] = score
+                    
+                    # Track metrics
+                    all_scores['accuracy'].append(score)
+                    all_scores[f'accuracy_{data_source}'].append(score)
+                    all_scores[f'accuracy_{metric_type}'].append(score)
+                    
+                    # Count as correct if score is 1.0 (TRUE)
+                    if score == 1.0:
+                        correct_predictions.append({
+                            'question': question,
+                            'model_answer': model_answer,
+                            'ground_truth': ground_truth,
+                            'score': score,
+                            'data_source': data_source
+                        })
+                    
+                    PrettyPrinter.status(
+                        f"Sample {i+1}", 
+                        f"Source: {data_source}, Correct: {'✓' if score == 1.0 else '✗'}", 
+                        "success" if score == 1.0 else "warning"
+                    )
+                    
+                except Exception as e:
+                    PrettyPrinter.status("Error", f"Failed to process item {i}: {str(e)}", "error")
+                    import traceback
+                    traceback.print_exc()
+                    continue
             
-            # Track metrics
-            all_scores['accuracy'].append(score)
-            all_scores[f'accuracy_{data_source}'].append(score)
-            all_scores[f'accuracy_{metric_type}'].append(score)
+            # Calculate overall metrics
+            overall_accuracy = np.mean(all_scores['accuracy']) if all_scores['accuracy'] else 0.0
             
-            # Count as correct if score is 1.0 (TRUE)
-            if score == 1.0:
-                correct_predictions.append({
-                    'question': question,
-                    'model_answer': model_answer,
-                    'ground_truth': ground_truth,
-                    'score': score,
-                    'data_source': data_source
-                })
+            # Calculate per-source accuracies
+            source_accuracies = {}
+            for key in all_scores:
+                if key.startswith('accuracy_') and key != 'accuracy':
+                    source_name = key.replace('accuracy_', '')
+                    source_accuracies[f'val/benchmark_accuracy/{source_name}'] = np.mean(all_scores[key])
+            
+            metrics = {
+                'val/benchmark_accuracy/overall': overall_accuracy,
+                'val/benchmark_correct_count': len(correct_predictions),
+                'val/benchmark_total_count': len(data),
+                **source_accuracies
+            }
             
             PrettyPrinter.status(
-                f"Sample {i+1}", 
-                f"Source: {data_source}, Correct: {'✓' if score == 1.0 else '✗'}", 
-                "success" if score == 1.0 else "warning"
+                "Evaluation Complete", 
+                f"Overall Accuracy: {overall_accuracy:.3f} ({len(correct_predictions)}/{len(data)})",
+                "success"
             )
-        
-        # Calculate overall metrics
-        overall_accuracy = np.mean(all_scores['accuracy']) if all_scores['accuracy'] else 0.0
-        
-        # Calculate per-source accuracies
-        source_accuracies = {}
-        for key in all_scores:
-            if key.startswith('accuracy_') and key != 'accuracy':
-                source_name = key.replace('accuracy_', '')
-                source_accuracies[f'val/benchmark_accuracy/{source_name}'] = np.mean(all_scores[key])
-        
-        metrics = {
-            'val/benchmark_accuracy/overall': overall_accuracy,
-            'val/benchmark_correct_count': len(correct_predictions),
-            'val/benchmark_total_count': len(data),
-            **source_accuracies
-        }
-        
-        PrettyPrinter.status(
-            "Evaluation Complete", 
-            f"Overall Accuracy: {overall_accuracy:.3f} ({len(correct_predictions)}/{len(data)})",
-            "success"
-        )
-        
-        return reward_tensor, metrics
+            
+            return reward_tensor, metrics
+            
+        except Exception as e:
+            PrettyPrinter.status("Error", f"Benchmark evaluation failed: {str(e)}", "error")
+            import traceback
+            traceback.print_exc()
+            
+            # Return empty results on error
+            reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+            return reward_tensor, {}
