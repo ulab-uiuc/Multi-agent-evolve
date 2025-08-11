@@ -136,7 +136,7 @@ def load_arc_dataset(split: str = "test", challenge: bool = True, num_samples: i
             break
             
         # Format choices
-        choices = [choice['text'] for choice in item['choices']['text']]
+        choices = [choice for choice in item['choices']['text']]
         labels = item['choices']['label']
         choice_text = "\n".join([f"{label}. {choice}" for label, choice in zip(labels, choices)])
         
