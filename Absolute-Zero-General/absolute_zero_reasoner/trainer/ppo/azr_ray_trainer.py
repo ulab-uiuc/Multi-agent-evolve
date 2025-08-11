@@ -637,7 +637,7 @@ class DatasetManager:
 
 class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
-    def __init__(self, past_epoch_window: int = 10, *args, **kwargs):
+    def __init__(self, past_epoch_window: int = 10, benchmark_reward_fn=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         assert self.config.actor_rollout_ref.rollout.n == 1, "GeneralIO only supports n=1 for now"
 
@@ -645,9 +645,29 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         self.dataset_manager = DatasetManager.remote()
         self._last_cleanup_step = 0
         self._cleanup_frequency = self.config.azr.get('executor_cleanup_frequency', 5)
+        self.benchmark_reward_fn = benchmark_reward_fn
     
     def cleanup(self):
         gc.collect()
+    
+    def _is_general_task(self) -> bool:
+        """Check if current task type is general"""
+        return getattr(self.config.azr, 'task_type', 'code') == 'general'
+
+    def _run_benchmark_evaluation(self) -> dict:
+        """Run benchmark evaluation for general tasks"""
+        if self.benchmark_reward_fn is None:
+            PrettyPrinter.status("BENCHMARK", "Benchmark reward function not available", "warn")
+            return {}
+        
+        try:
+            # Call the parent class method that's already implemented
+            metrics = super()._run_benchmark_evaluation()
+            PrettyPrinter.status("BENCHMARK", f"Completed benchmark evaluation with {len(metrics)} metrics", "success")
+            return metrics
+        except Exception as e:
+            PrettyPrinter.status("BENCHMARK", f"Benchmark evaluation failed: {str(e)}", "error")
+            return {}
     
     def _is_general_task(self) -> bool:
         """Check if current task type is general"""
