@@ -90,39 +90,39 @@ def load_gsm8k_dataset(split: str = "test", num_samples: int = None) -> List[Dic
 #     return data
 
 
-def load_mmlu_dataset(subject: str = "abstract_algebra", split: str = "test", num_samples: int = None) -> List[Dict]:
-    """Load MMLU dataset for a specific subject."""
-    dataset = load_dataset("cais/mmlu", subject, split=split)
+# def load_mmlu_dataset(subject: str = "abstract_algebra", split: str = "test", num_samples: int = None) -> List[Dict]:
+#     """Load MMLU dataset for a specific subject."""
+#     dataset = load_dataset("cais/mmlu", subject, split=split)
     
-    data = []
-    for i, item in enumerate(dataset):
-        if num_samples and i >= num_samples:
-            break
+#     data = []
+#     for i, item in enumerate(dataset):
+#         if num_samples and i >= num_samples:
+#             break
             
-        # Format choices
-        choices = item['choices']
-        choice_text = "\n".join([f"{chr(65+j)}. {choice}" for j, choice in enumerate(choices)])
+#         # Format choices
+#         choices = item['choices']
+#         choice_text = "\n".join([f"{chr(65+j)}. {choice}" for j, choice in enumerate(choices)])
         
-        prompt_text = f"""Answer the following multiple choice question:
+#         prompt_text = f"""Answer the following multiple choice question:
 
-Question: {item['question']}
+# Question: {item['question']}
 
-Choices:
-{choice_text}
+# Choices:
+# {choice_text}
 
-Choose the correct answer (A, B, C, or D):"""
+# Choose the correct answer (A, B, C, or D):"""
         
-        data.append({
-            "prompt": [{"role": "user", "content": prompt_text}],
-            "ground_truth": chr(65 + item['answer']),  # Convert 0,1,2,3 to A,B,C,D
-            "answer": chr(65 + item['answer']),
-            "data_source": f"mmlu_{subject}",
-            "subject": subject,
-            "choices": choices,
-            "extra_info": {"metric": "multiple_choice_accuracy"}
-        })
+#         data.append({
+#             "prompt": [{"role": "user", "content": prompt_text}],
+#             "ground_truth": chr(65 + item['answer']),  # Convert 0,1,2,3 to A,B,C,D
+#             "answer": chr(65 + item['answer']),
+#             "data_source": f"mmlu_{subject}",
+#             "subject": subject,
+#             "choices": choices,
+#             "extra_info": {"metric": "multiple_choice_accuracy"}
+#         })
     
-    return data
+#     return data
 
 
 def load_arc_dataset(split: str = "test", challenge: bool = True, num_samples: int = None) -> List[Dict]:
