@@ -1688,7 +1688,7 @@ Then determine if the model's answer is correct:
             data_item = data[i]
             
             # Extract information
-            prompt_data = data_item.non_tensor_batch.get('prompt', [])
+            prompt_data = data_item.non_tensor_batch.get('question', [])
             question = self._get_question_from_prompt(prompt_data)
             ground_truth = data_item.non_tensor_batch.get('answer', '')
             data_source = data_item.non_tensor_batch.get('data_source', 'unknown')
