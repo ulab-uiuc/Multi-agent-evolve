@@ -6,7 +6,7 @@ export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export RAY_memory_monitor_refresh_ms=0
 export RAY_LOGGING_LEVEL=DEBUG
 export HYDRA_FULL_ERROR=1
-export CUDA_VISIBLE_DEVICES="1,2"
+export CUDA_VISIBLE_DEVICES="4,5"
 export NCCL_P2P_DISABLE=1
 
 python -m absolute_zero_reasoner.main_azr_ppo \
@@ -16,7 +16,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     algorithm.adv_estimator=reinforce_plus_plus \
     data.train_files=data/code_reason/test_answer.parquet \
     data.val_files=data/code_reason/test_answer.parquet \
-    data.train_batch_size=8 \
+    data.train_batch_size=32 \
     data.val_batch_size=64 \
     data.max_prompt_length=6144 \
     data.max_validation_prompt_length=6144 \
@@ -24,8 +24,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.model.path=Qwen/Qwen2.5-3B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=4 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0.0 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -35,8 +35,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.grad_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    +actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
-    +actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+    +actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
+    +actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.max_num_batched_tokens=16384 \
@@ -50,7 +50,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='general_io_reasoning' \
-    trainer.experiment_name='general_io_3b_withref' \
+    trainer.experiment_name='general_io_3b_withref_32-16bs' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=25 \
