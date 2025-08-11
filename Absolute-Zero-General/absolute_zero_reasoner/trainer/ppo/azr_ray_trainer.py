@@ -664,9 +664,13 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             # Call the parent class method that's already implemented
             metrics = super()._run_benchmark_evaluation()
             PrettyPrinter.status("BENCHMARK", f"Completed benchmark evaluation with {len(metrics)} metrics", "success")
+            if metrics:
+                PrettyPrinter.status("BENCHMARK", f"Metrics keys: {list(metrics.keys())[:5]}", "info")
             return metrics
         except Exception as e:
             PrettyPrinter.status("BENCHMARK", f"Benchmark evaluation failed: {str(e)}", "error")
+            import traceback
+            traceback.print_exc()
             return {}
     
     def _is_general_task(self) -> bool:
@@ -1032,14 +1036,28 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             if self._is_general_task():
                 PrettyPrinter.status("BENCHMARK", "Running benchmark evaluation for general task", "info")
                 benchmark_metrics = self._run_benchmark_evaluation()
-                logger.log(data=benchmark_metrics, step=self.global_steps)
+                
+                # Debug: Print logger backends and metrics
+                PrettyPrinter.status("DEBUG", f"Logger backends: {list(logger.logger.keys())}", "info")
+                PrettyPrinter.status("DEBUG", f"Benchmark metrics type: {type(benchmark_metrics)}, length: {len(benchmark_metrics)}", "info")
+                if benchmark_metrics:
+                    PrettyPrinter.status("DEBUG", f"Sample metrics: {list(benchmark_metrics.keys())[:3]}", "info")
+                
+                if benchmark_metrics:
+                    logger.log(data=benchmark_metrics, step=self.global_steps)
+                    PrettyPrinter.status("WANDB", f"Logged {len(benchmark_metrics)} benchmark metrics to step {self.global_steps}", "success")
+                else:
+                    PrettyPrinter.status("WANDB", "No benchmark metrics to log", "warn")
+                
                 PrettyPrinter.table(
                     ["Benchmark Metric", "Value"],
                     [[k, v] for k, v in benchmark_metrics.items()],
                     title="Benchmark Evaluation Metrics"
                 )
+                
                 if self.config.trainer.get('val_only', False):
                     return
+            
 
         if self.loaded_datasets:
             PrettyPrinter.section_header(f"Resuming training from checkpoint")
