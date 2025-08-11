@@ -1018,7 +1018,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             self.tokenizer.chat_template = "{%- for message in messages -%}{{- '\n' if not loop.first -}}{{- message['content'] -}}{%- endfor -%}"
 
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
+        if self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
             # PrettyPrinter.section_header(f"Starting Initial Validation")
             # val_metrics = self._validate()
             # PrettyPrinter.table(
