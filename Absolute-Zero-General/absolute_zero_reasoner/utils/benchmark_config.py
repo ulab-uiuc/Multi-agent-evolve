@@ -124,5 +124,5 @@ DEFAULT_BENCHMARK_CONFIG = {
                            'mmlu_astronomy', 'mmlu_business_ethics', 
                            'mmlu_clinical_knowledge'],
     'evaluation_frequency': 100,  # Evaluate every 100 steps
-    'max_samples_per_benchmark': 10,  # Limit samples for faster evaluation
+    'max_samples_per_benchmark': 64,  # Limit samples for faster evaluation
 }
