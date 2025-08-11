@@ -1592,6 +1592,7 @@ Then determine if the model's answer is correct:
 <answer>TRUE</answer> or <answer>FALSE</answer>"""
 
         try:
+            PrettyPrinter.code_block(f"Generated LLM Evaluation Prompt:\n{prompt}")
             completion = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "user", "content": prompt}],
@@ -1609,6 +1610,7 @@ Then determine if the model's answer is correct:
             else:
                 result = completion.choices[0].message.content.strip()
             
+            PrettyPrinter.code_block(f"LLM Evaluation Result:\n{result}")
             # Extract TRUE/FALSE from <answer></answer> tags
             answer_match = re.search(r'<answer>(TRUE|FALSE)</answer>', result, re.IGNORECASE)
             if answer_match:

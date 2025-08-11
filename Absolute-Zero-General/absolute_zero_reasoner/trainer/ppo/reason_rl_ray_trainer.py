@@ -674,7 +674,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
 
     def _is_general_task(self) -> bool:
         """Check if the current task is a general task that should use benchmark evaluation."""
-        task_type = self.config.get('task_type', '')
+        task_type = self.config.get('azr.task_type', '')
         return task_type.lower() == 'general'
     
     def _setup_benchmark_evaluation(self):
@@ -702,7 +702,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
             # Create benchmark reward manager
             self.benchmark_reward_fn = BenchmarkEvaluationRewardManager(
                 tokenizer=self.tokenizer,
-                model_name=self.config.get('benchmark_eval_model', "meta/llama-3.1-405b-instruct"),
+                model_name=self.config.get('azr.benchmark_eval_model', "meta/llama-3.1-405b-instruct"),
                 temperature=0.0,
                 max_tokens=500
             )
