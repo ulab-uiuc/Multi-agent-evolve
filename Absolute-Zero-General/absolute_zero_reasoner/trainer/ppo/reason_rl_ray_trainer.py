@@ -694,7 +694,14 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
             benchmark_files = benchmark_config.get_benchmark_files(benchmark_names)
             
             if not benchmark_files:
-                print("Warning: No benchmark files found for evaluation. Skipping benchmark setup.")
+                print(f"Warning: No benchmark files found in {benchmark_config.validation_dir}")
+                print(f"Expected benchmark names: {benchmark_names}")
+                print("Skipping benchmark setup. To enable benchmark evaluation:")
+                print("1. Prepare benchmark validation data in parquet format")
+                print("2. Place files in the validation directory")
+                print("3. Update benchmark_validation_dir in config if needed")
+                self.benchmark_reward_fn = None
+                self.benchmark_dataloader = None
                 return
             
             print(f"Setting up benchmark evaluation with files: {benchmark_files}")
@@ -756,11 +763,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
             if benchmark_datasets:
                 benchmark_dataset = torch.utils.data.ConcatDataset(benchmark_datasets)
                 print(f"Total benchmark samples: {total_samples}")
-            else:
-                print("Warning: No benchmark datasets loaded successfully")
-                benchmark_dataset = None
-            
-            if benchmark_dataset is not None:
+                
                 self.benchmark_dataloader = DataLoader(
                     dataset=benchmark_dataset,
                     batch_size=min(len(benchmark_dataset), 32),  # Use reasonable batch size
@@ -771,18 +774,23 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                 
                 print(f"Benchmark evaluation setup complete. Dataset size: {len(benchmark_dataset)}")
             else:
+                print("Warning: No benchmark datasets loaded successfully")
+                self.benchmark_reward_fn = None
                 self.benchmark_dataloader = None
-                print("No benchmark datasets available for evaluation")
             
         except Exception as e:
             print(f"Error setting up benchmark evaluation: {e}")
             print("Continuing without benchmark evaluation...")
+            import traceback
+            traceback.print_exc()
             self.benchmark_reward_fn = None
             self.benchmark_dataloader = None
     
     def _run_benchmark_evaluation(self) -> Dict:
         """Run benchmark evaluation and return metrics."""
         if self.benchmark_reward_fn is None or self.benchmark_dataloader is None:
+            from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter as pp
+            pp.status("BENCHMARK", "Benchmark evaluation not available (no data or reward function)", "warning")
             return {}
         
         from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter as pp
@@ -793,7 +801,11 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         all_metrics = defaultdict(list)
         
         try:
+            batch_count = 0
             for batch_data in self.benchmark_dataloader:
+                batch_count += 1
+                pp.status("BENCHMARK", f"Processing batch {batch_count}", "info")
+                
                 batch = DataProto.from_single_dict(batch_data)
                 
                 # Generate responses
@@ -821,6 +833,10 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                 for k, v in metrics.items():
                     all_metrics[k].append(v)
             
+            if batch_count == 0:
+                pp.status("BENCHMARK", "No batches found in benchmark dataloader", "warning")
+                return {}
+            
             # Aggregate metrics
             final_metrics = {}
             for k, v_list in all_metrics.items():
@@ -830,11 +846,13 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                     else:
                         final_metrics[k] = v_list[0]  # Take first value for non-numeric
             
-            pp.status("Benchmark Evaluation", "Completed successfully", "success")
+            pp.status("Benchmark Evaluation", f"Completed successfully ({batch_count} batches processed)", "success")
             return final_metrics
             
         except Exception as e:
             pp.status("Benchmark Evaluation", f"Failed with error: {e}", "error")
+            import traceback
+            traceback.print_exc()
             return {}
 
 
