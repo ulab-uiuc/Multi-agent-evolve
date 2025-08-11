@@ -1,7 +1,7 @@
 data:
   tokenizer: null
   train_files: data/math/train_${reward_fn.extraction_type}.parquet
-  val_files: data/math/test_${reward_fn.extraction_type}.parquet
+  val_files: []  # Empty for general tasks - use benchmark evaluation instead
   prompt_key: prompt
   max_prompt_length: 8096
   max_response_length: 8096
@@ -172,6 +172,17 @@ azr:
   pretrain_pred_steps: -1
   random_print_max_programs: 3
   train_propose: False  # Simplified for general tasks
+  
+  # Benchmark evaluation settings for general tasks
+  benchmark_validation_dir: "./validation_datasets"
+  benchmark_names:
+    - "math"
+    - "gsm8k" 
+    - "mmlu"
+    - "arc_challenge"
+  benchmark_eval_model: "meta/llama-3.1-405b-instruct"
+  benchmark_evaluation_frequency: 100  # Run benchmark evaluation every N steps
+  benchmark_max_samples: 500  # Limit samples per benchmark for faster evaluation
   
   data_selection_strategy:
     io_n: 6

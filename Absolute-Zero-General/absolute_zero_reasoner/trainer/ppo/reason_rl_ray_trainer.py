@@ -247,26 +247,37 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
-            pp.section_header("Initial Validation")
-            pp.status("Validation", "Running initial validation...", "info")
-            
-            val_metrics = self._validate(do_sample=self.config.eval.do_sample)
+        if self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
+            val_metrics = {}
+            if self._is_general_task():
+                # For general tasks, only run benchmark evaluation
+                if self.benchmark_reward_fn is not None:
+                    pp.section_header("Initial Benchmark Evaluation")
+                    pp.status("Benchmark", "Running initial benchmark evaluation...", "info")
+                    val_metrics = self._run_benchmark_evaluation()
+            else:
+                # For other tasks, run standard validation
+                if self.val_reward_fn is not None:
+                    pp.section_header("Initial Validation")
+                    pp.status("Validation", "Running initial validation...", "info")
+                    val_metrics = self._validate(do_sample=self.config.eval.do_sample)
 
-            # Convert metrics to table format
-            metrics_table = []
-            for k, v in val_metrics.items():
-                metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
+            if val_metrics:
+                # Convert metrics to table format
+                metrics_table = []
+                for k, v in val_metrics.items():
+                    metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
 
-            pp.table(["Metric", "Value"], metrics_table, "Initial Validation Results")
-            logger.log(data=val_metrics, step=self.global_steps)
+                evaluation_type = "Initial Benchmark" if self._is_general_task() else "Initial Validation"
+                pp.table(["Metric", "Value"], metrics_table, f"{evaluation_type} Results")
+                logger.log(data=val_metrics, step=self.global_steps)
 
-            # save val metrics to model path
-            if self.config.eval.get('log_to_model_path', False):
-                import json
-                import os
-                with open(os.path.join(self.config.actor_rollout_ref.model.path, 'math_metrics.json'), 'w') as f:
-                    json.dump(val_metrics, f)
+                # save val metrics to model path
+                if self.config.eval.get('log_to_model_path', False):
+                    import json
+                    import os
+                    with open(os.path.join(self.config.actor_rollout_ref.model.path, 'math_metrics.json'), 'w') as f:
+                        json.dump(val_metrics, f)
 
             if self.config.trainer.get('val_only', False):
                 pp.status("Training", "Validation only mode, exiting", "success")
@@ -398,19 +409,33 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                         metrics.update(actor_output_metrics)
 
                     # validate
-                    if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
-                        self.global_steps % self.config.trainer.test_freq == 0:
+                    if self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
-                            pp.section_header(f"Validation (Step {self.global_steps})")
-                            pp.status("Validation", "Running validation", "info")
-                            val_metrics: dict = self._validate()
+                            if self._is_general_task():
+                                # For general tasks, only run benchmark evaluation
+                                if self.benchmark_reward_fn is not None:
+                                    pp.section_header(f"Benchmark Evaluation (Step {self.global_steps})")
+                                    pp.status("Benchmark", "Running benchmark evaluation", "info")
+                                    val_metrics: dict = self._run_benchmark_evaluation()
+                                else:
+                                    val_metrics = {}
+                            else:
+                                # For other tasks, run standard validation
+                                if self.val_reward_fn is not None:
+                                    pp.section_header(f"Validation (Step {self.global_steps})")
+                                    pp.status("Validation", "Running validation", "info")
+                                    val_metrics: dict = self._validate()
+                                else:
+                                    val_metrics = {}
 
                             # Convert metrics to table format
-                            val_metrics_table = []
-                            for k, v in val_metrics.items():
-                                val_metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
+                            if val_metrics:
+                                val_metrics_table = []
+                                for k, v in val_metrics.items():
+                                    val_metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
 
-                            pp.table(["Metric", "Value"], val_metrics_table, f"Validation Results (Step {self.global_steps})")
+                                evaluation_type = "Benchmark" if self._is_general_task() else "Validation"
+                                pp.table(["Metric", "Value"], val_metrics_table, f"{evaluation_type} Results (Step {self.global_steps})")
                         metrics.update(val_metrics)
 
                     if self.config.trainer.save_freq > 0 and \
@@ -449,16 +474,26 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                 if self.global_steps >= self.total_training_steps:
                     pp.section_header("Training Complete")
                     # perform validation after training
-                    if self.val_reward_fn is not None:
-                        pp.status("Validation", "Running final validation", "info")
-                        val_metrics = self._validate()
+                    val_metrics = {}
+                    if self._is_general_task():
+                        # For general tasks, only run benchmark evaluation
+                        if self.benchmark_reward_fn is not None:
+                            pp.status("Benchmark", "Running final benchmark evaluation", "info")
+                            val_metrics = self._run_benchmark_evaluation()
+                    else:
+                        # For other tasks, run standard validation
+                        if self.val_reward_fn is not None:
+                            pp.status("Validation", "Running final validation", "info")
+                            val_metrics = self._validate()
 
+                    if val_metrics:
                         # Convert metrics to table format
                         final_metrics_table = []
                         for k, v in val_metrics.items():
                             final_metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
 
-                        pp.table(["Metric", "Value"], final_metrics_table, "Final Validation Results")
+                        evaluation_type = "Final Benchmark" if self._is_general_task() else "Final Validation"
+                        pp.table(["Metric", "Value"], final_metrics_table, f"{evaluation_type} Results")
                         logger.log(data=val_metrics, step=self.global_steps)
 
                     if self.config.trainer.save_freq > 0 and \
@@ -558,12 +593,12 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         for k, v in all_eval_metrics.items():
             metric_dict[k] = np.mean(v)
 
-        # Run benchmark evaluation if available for general tasks
-        if self._is_general_task() and self.benchmark_reward_fn is not None:
-            benchmark_frequency = self.config.get('benchmark_evaluation_frequency', 100)
-            if self.global_steps % benchmark_frequency == 0:
-                benchmark_metrics = self._run_benchmark_evaluation()
-                metric_dict.update(benchmark_metrics)
+        # Run benchmark evaluation if available for general tasks - but not here since we handle it separately
+        # if self._is_general_task() and self.benchmark_reward_fn is not None:
+        #     benchmark_frequency = self.config.get('benchmark_evaluation_frequency', 100)
+        #     if self.global_steps % benchmark_frequency == 0:
+        #         benchmark_metrics = self._run_benchmark_evaluation()
+        #         metric_dict.update(benchmark_metrics)
 
         if self.config.eval.get('save_generations', False):
             import json
