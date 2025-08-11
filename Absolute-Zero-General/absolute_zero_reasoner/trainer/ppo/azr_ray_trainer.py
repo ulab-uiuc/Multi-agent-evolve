@@ -639,7 +639,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
     def __init__(self, past_epoch_window: int = 10, benchmark_reward_fn=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        assert self.config.actor_rollout_ref.rollout.n == 1, "GeneralIO only supports n=1 for now"
+        # assert self.config.actor_rollout_ref.rollout.n == 1, "GeneralIO only supports n=1 for now"
 
         self._past_epoch_window = past_epoch_window
         self.dataset_manager = DatasetManager.remote()
