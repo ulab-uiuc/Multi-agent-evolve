@@ -1526,8 +1526,7 @@ First, analyze the answers in the <think> tags below:
 <think>
 Compare the answers:
 - Does the model select the same choice letter as the ground truth?
-- Is the model's reasoning sound?
-- Does the answer make sense in context?
+(If the model did not provide a letter, count it as incorrect)
 
 [Write your detailed analysis here]
 </think>
@@ -1696,7 +1695,9 @@ Then determine if the model's answer is correct:
                     PrettyPrinter.status("Debug", f"Data item type: {type(data_item)}", "info")
                     
                     # Extract information
+                    PrettyPrinter.status("Debug", f"Non-tensor batch keys: {list(data_item.non_tensor_batch.keys())}", "info")
                     prompt_data = data_item.non_tensor_batch.get('prompt', [])
+                    PrettyPrinter.status("Debug", f"Prompt data: {prompt_data}", "info")
                     question = self._get_question_from_prompt(prompt_data)
                     ground_truth = data_item.non_tensor_batch.get('answer', '')
                     data_source = data_item.non_tensor_batch.get('data_source', 'unknown')
