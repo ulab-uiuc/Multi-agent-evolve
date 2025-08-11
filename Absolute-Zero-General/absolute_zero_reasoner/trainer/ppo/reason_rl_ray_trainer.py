@@ -1,6 +1,7 @@
 import uuid
 from copy import deepcopy
 from collections import defaultdict
+from typing import Dict, List, Optional
 
 from omegaconf import OmegaConf, open_dict
 import torch
@@ -196,6 +197,12 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
 
         self._validate_config()
         self._create_dataloader()
+        
+        # Initialize benchmark evaluation for general tasks
+        self.benchmark_reward_fn = None
+        self.benchmark_dataloader = None
+        if self._is_general_task():
+            self._setup_benchmark_evaluation()
 
     def fit(self):
         """
@@ -551,6 +558,13 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         for k, v in all_eval_metrics.items():
             metric_dict[k] = np.mean(v)
 
+        # Run benchmark evaluation if available for general tasks
+        if self._is_general_task() and self.benchmark_reward_fn is not None:
+            benchmark_frequency = self.config.get('benchmark_evaluation_frequency', 100)
+            if self.global_steps % benchmark_frequency == 0:
+                benchmark_metrics = self._run_benchmark_evaluation()
+                metric_dict.update(benchmark_metrics)
+
         if self.config.eval.get('save_generations', False):
             import json
             with open(f'{self.config.trainer.experiment_name}_generations_{self.global_steps}.json', 'w') as f:
@@ -622,6 +636,132 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         with open_dict(self.config):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
+
+    def _is_general_task(self) -> bool:
+        """Check if the current task is a general task that should use benchmark evaluation."""
+        task_type = self.config.get('task_type', '')
+        return task_type.lower() == 'general'
+    
+    def _setup_benchmark_evaluation(self):
+        """Setup benchmark evaluation for general tasks."""
+        try:
+            from absolute_zero_reasoner.rewards.reward_managers import BenchmarkEvaluationRewardManager
+            from absolute_zero_reasoner.utils.benchmark_config import BenchmarkConfig, DEFAULT_BENCHMARK_CONFIG
+            from torch.utils.data import DataLoader
+            
+            # Initialize benchmark config
+            benchmark_config = BenchmarkConfig(
+                validation_dir=self.config.get('benchmark_validation_dir', DEFAULT_BENCHMARK_CONFIG['validation_dir'])
+            )
+            
+            # Get available benchmark files
+            benchmark_names = self.config.get('benchmark_names', DEFAULT_BENCHMARK_CONFIG['default_benchmarks'])
+            benchmark_files = benchmark_config.get_benchmark_files(benchmark_names)
+            
+            if not benchmark_files:
+                print("Warning: No benchmark files found for evaluation. Skipping benchmark setup.")
+                return
+            
+            print(f"Setting up benchmark evaluation with files: {benchmark_files}")
+            
+            # Create benchmark reward manager
+            self.benchmark_reward_fn = BenchmarkEvaluationRewardManager(
+                tokenizer=self.tokenizer,
+                model_name=self.config.get('benchmark_eval_model', "meta/llama-3.1-405b-instruct"),
+                temperature=0.0,
+                max_tokens=500
+            )
+            
+            # Create benchmark dataset
+            max_samples = self.config.get('benchmark_max_samples', DEFAULT_BENCHMARK_CONFIG['max_samples_per_benchmark'])
+            
+            benchmark_dataset = RLHFDataset(
+                parquet_files=benchmark_files,
+                tokenizer=self.tokenizer,
+                prompt_key=self.config.data.prompt_key,
+                max_prompt_length=self.config.data.get('max_validation_prompt_length', 8192),
+                filter_prompts=True,
+                return_raw_chat=self.config.data.get('return_raw_chat', False),
+                truncation='error',
+                extra_source_key="benchmark"
+            )
+            
+            # Limit dataset size if specified
+            if max_samples and len(benchmark_dataset) > max_samples:
+                benchmark_dataset = torch.utils.data.Subset(benchmark_dataset, range(max_samples))
+            
+            self.benchmark_dataloader = DataLoader(
+                dataset=benchmark_dataset,
+                batch_size=min(len(benchmark_dataset), 32),  # Use reasonable batch size
+                shuffle=False,
+                drop_last=False,
+                collate_fn=collate_fn
+            )
+            
+            print(f"Benchmark evaluation setup complete. Dataset size: {len(benchmark_dataset)}")
+            
+        except Exception as e:
+            print(f"Error setting up benchmark evaluation: {e}")
+            print("Continuing without benchmark evaluation...")
+            self.benchmark_reward_fn = None
+            self.benchmark_dataloader = None
+    
+    def _run_benchmark_evaluation(self) -> Dict:
+        """Run benchmark evaluation and return metrics."""
+        if self.benchmark_reward_fn is None or self.benchmark_dataloader is None:
+            return {}
+        
+        from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter as pp
+        
+        pp.section_header("Running Benchmark Evaluation")
+        
+        reward_tensor_lst = []
+        all_metrics = defaultdict(list)
+        
+        try:
+            for batch_data in self.benchmark_dataloader:
+                batch = DataProto.from_single_dict(batch_data)
+                
+                # Generate responses
+                gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+                gen_batch.meta_info = {
+                    'eos_token_id': self.tokenizer.eos_token_id,
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'recompute_log_prob': False,
+                    'do_sample': False,  # Use greedy decoding for evaluation
+                    'validate': True,
+                }
+                
+                # Pad and generate
+                gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, self.actor_rollout_wg.world_size)
+                output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(gen_batch_padded)
+                output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
+                
+                # Combine batch with generated outputs
+                batch = batch.union(output_gen_batch)
+                
+                # Evaluate using benchmark reward manager
+                reward_tensor, metrics = self.benchmark_reward_fn(batch)
+                
+                reward_tensor_lst.append(reward_tensor)
+                for k, v in metrics.items():
+                    all_metrics[k].append(v)
+            
+            # Aggregate metrics
+            final_metrics = {}
+            for k, v_list in all_metrics.items():
+                if v_list:
+                    if isinstance(v_list[0], (int, float)):
+                        final_metrics[k] = np.mean(v_list)
+                    else:
+                        final_metrics[k] = v_list[0]  # Take first value for non-numeric
+            
+            pp.status("Benchmark Evaluation", "Completed successfully", "success")
+            return final_metrics
+            
+        except Exception as e:
+            pp.status("Benchmark Evaluation", f"Failed with error: {e}", "error")
+            return {}
 
 
     def _save_checkpoint(self):
