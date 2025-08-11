@@ -27,8 +27,6 @@ def load_math_dataset(split: str = "test", num_samples: int = None) -> List[Dict
             "ground_truth": item['solution'],
             "answer": item['answer'].split('The answer is')[-1].strip() if 'The answer is' in item['answer'] else item['answer'],
             "data_source": "math",
-            "problem_type": item['type'],
-            "level": item['level'],
             "extra_info": {"metric": "math_accuracy"}
         })
     
