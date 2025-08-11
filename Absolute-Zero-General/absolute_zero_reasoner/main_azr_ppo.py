@@ -161,7 +161,7 @@ def main_task(config, compute_score=None):
         # For validation, use BenchmarkEvaluationRewardManager instead
         val_reward_fn = BenchmarkEvaluationRewardManager(
             tokenizer=tokenizer,
-            model_name=getattr(config.reward_fn, 'llm_model_name', 'meta/llama-3.1-405b-instruct'),
+            model_name=getattr(config.azr, 'benchmark_eval_model', 'meta/llama-3.1-405b-instruct'),
             temperature=getattr(config.reward_fn, 'temperature', 0.0),
             max_tokens=getattr(config.reward_fn, 'max_tokens', 500),
             top_p=getattr(config.reward_fn, 'top_p', 0.95),

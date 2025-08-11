@@ -180,7 +180,7 @@ azr:
     - "gsm8k" 
     - "mmlu"
     - "arc_challenge"
-  benchmark_eval_model: "meta/llama-3.1-405b-instruct"
+  benchmark_eval_model: "nvidia/Llama-3.1-Nemotron-51B-Instruct"
   benchmark_evaluation_frequency: 100  # Run benchmark evaluation every N steps
   benchmark_max_samples: 500  # Limit samples per benchmark for faster evaluation
   
