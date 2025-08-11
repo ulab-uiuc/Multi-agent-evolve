@@ -744,6 +744,8 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                     if max_samples_per_benchmark and benchmark_size > max_samples_per_benchmark:
                         # Create subset with limited samples
                         indices = torch.randperm(benchmark_size)[:max_samples_per_benchmark]
+                        # Convert to python integers to avoid pandas indexing issues
+                        indices = indices.tolist()
                         limited_dataset = torch.utils.data.Subset(single_benchmark_dataset, indices)
                         benchmark_datasets.append(limited_dataset)
                         actual_size = max_samples_per_benchmark
