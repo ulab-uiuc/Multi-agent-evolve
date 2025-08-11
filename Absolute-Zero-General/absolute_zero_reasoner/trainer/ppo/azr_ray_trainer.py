@@ -653,12 +653,12 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         """Check if current task type is general"""
         return getattr(self.config.azr, 'task_type', 'code') == 'general'
 
-    def _run_benchmark_evaluation(self) -> dict:
-        """Run benchmark evaluation for general tasks"""
-        # TODO: Implement benchmark evaluation logic
-        # This would use BenchmarkEvaluationRewardManager
-        PrettyPrinter.status("BENCHMARK", "Benchmark evaluation not yet implemented", "warn")
-        return {}
+    # def _run_benchmark_evaluation(self) -> dict:
+    #     """Run benchmark evaluation for general tasks"""
+    #     # TODO: Implement benchmark evaluation logic
+    #     # This would use BenchmarkEvaluationRewardManager
+    #     PrettyPrinter.status("BENCHMARK", "Benchmark evaluation not yet implemented", "warn")
+    #     return {}
     
     def _create_train_gen_dataloader(
         self,
