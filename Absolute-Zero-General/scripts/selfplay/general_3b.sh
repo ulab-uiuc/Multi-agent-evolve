@@ -72,6 +72,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.problem_types=['general'] \
     azr.pred_data_mix_strategy=uniform_total \
     azr.train_propose=False \
+    +azr.infer_pred_gen_together=True \
     azr.reward.n_samples=3 \
     azr.reward.generation_reward_config.format_reward=false \
     azr.reward.generation_reward_config.include_references=true \

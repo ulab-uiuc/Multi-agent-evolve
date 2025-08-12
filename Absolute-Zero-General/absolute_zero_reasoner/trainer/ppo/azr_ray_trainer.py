@@ -798,7 +798,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
         # generate a batch
-        with _timer(f'gen/together', timing_raw):
+        with _timer(f'gen/{problem_type}', timing_raw):
             gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
         batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
@@ -814,22 +814,22 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
         # recompute old_log_probs
-        with _timer(f'old_log_prob/together', timing_raw):
+        with _timer(f'old_log_prob/{problem_type}', timing_raw):
             old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
             batch = batch.union(old_log_prob)
 
         if self.use_reference_policy:
-            with _timer(f'ref/together', timing_raw):
+            with _timer(f'ref/{problem_type}', timing_raw):
                 ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                 batch = batch.union(ref_log_prob)
 
         # compute values
         if self.use_critic:
-            with _timer(f'values/together', timing_raw):
+            with _timer(f'values/{problem_type}', timing_raw):
                 values = self.critic_wg.compute_values(batch)
                 batch = batch.union(values)
 
-        with _timer(f'adv/together', timing_raw):
+        with _timer(f'adv/{problem_type}', timing_raw):
             if self.use_rm:
                 reward_tensor = self.rm_wg.compute_rm_score(batch)
                 batch = batch.union(reward_tensor)
@@ -841,15 +841,15 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             # make sure actor_rollout_wg n > 1
             reward_fn_kwargs = {
                 'data': batch,
-                'problem_type': "pred_gen",
+                'problem_type': "together_general",
                 'rollout_actor_wg': self.actor_rollout_wg, # need this to estimate difficulty reward
                 'n_samples': self.config.azr.reward.n_samples,
                 'general_type_counters': general_type_counters,
             } # kwargs for gen batch
 
-            with _timer(f'reward_fn/together', timing_raw):
+            with _timer(f'reward_fn/{problem_type}', timing_raw):
                 PrettyPrinter.status("REWARD", f"Computing rewards for {problem_type}...", "info")
-                (reward_tensor_gen, reward_tensor_pred), (train_metrics_gen, train_metrics_pred), valid_questions = self.reward_fn(**reward_fn_kwargs)
+                reward_tensor_gen, reward_tensor_pred, train_metrics_gen, train_metrics_pred, valid_questions = self.reward_fn(**reward_fn_kwargs)
                 PrettyPrinter.status("REWARD", f"Found {len(valid_questions) if valid_questions else 0} valid questions", "success")
 
             # Log new programs if available
@@ -1181,7 +1181,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         self._last_cleanup_step = self.global_steps
 
                     if 'general' in self.config.azr.problem_types:
-                        if self.config.azr.infer_pred_gen_togther:
+                        if self.config.azr.infer_pred_gen_together:
                             if not self.pretrain_pred:
                                 try:
                                     batch_dict = next(gen_general_dataloader)
@@ -1193,7 +1193,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                                     )
                                     batch_dict = next(gen_general_dataloader)
                                 gen_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                                gen_batch, pred_batch, metrics = self._compute_batch_together(gen_batch, metrics, timing_raw, problem_type='gen_general')
+                                gen_batch, pred_batch, metrics = self._compute_batch_together(gen_batch, metrics, timing_raw, problem_type='together_general')
                                 if self.config.azr.train_propose:
                                     batches[f'gen_general'] = gen_batch
                             batches[f'pred_general'] = pred_batch

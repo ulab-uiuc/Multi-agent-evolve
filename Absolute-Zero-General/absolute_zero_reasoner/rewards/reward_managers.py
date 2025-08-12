@@ -1728,7 +1728,7 @@ Then provide a score from 1 to 10 between <score> and </score> where:
                 all_scores['llm_judge_score'].append(llm_score)
             
             all_scores['accuracy'] = all_scores['llm_judge_score']  # For compatibility
-        elif problem_type.startswith('pred_gen'):
+        elif problem_type.startswith('together'):
             PrettyPrinter.section_header("Computing Prediction and Generation Rewards for GeneralIO Tasks in a single inference")
 
             reward_tensor_gen = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
@@ -1804,7 +1804,7 @@ Then provide a score from 1 to 10 between <score> and </score> where:
             all_scores_gen['solver_avg_scores'] = avg_pred_scores
             all_scores_pred['accuracy'] = all_scores['llm_judge_score']  # For compatibility
 
-            return (reward_tensor_gen, reward_tensor_pred), (all_scores_gen, all_scores_pred), valid_questions
+            return reward_tensor_gen, reward_tensor_pred, all_scores_gen, all_scores_pred, valid_questions
         elif problem_type.startswith('judge_solver'):
             PrettyPrinter.section_header("Computing Judging Solver Rewards for GeneralIO Tasks")
 
