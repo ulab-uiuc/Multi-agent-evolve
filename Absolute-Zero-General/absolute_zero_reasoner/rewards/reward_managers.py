@@ -1046,7 +1046,7 @@ class GeneralIORewardManager:
         question = data_dict.get('question', '')
         answer = data_dict.get('answer', data_dict.get('generation', '')).split('[Your final answer to the question, structured and clear, without restating the question]')[-1]
         PrettyPrinter.code_block(f"Generated prompt for question and answer evaluation:\n{question}\n{answer}")
-        prompt = f"""Please evaluate the quality of the following question and answer pair generation.
+        prompt = f"""Please evaluate the quality of the following question and answer pair.
 Question: {question}
 
 Provided Answer: {answer}
@@ -1184,6 +1184,184 @@ Then provide a score from 1 to 10 between <score> and </score> where:
     def _compute_score_for_pred(self, external_llm_score: float) -> float:
         """For 'pred' problem type, use the LLM score as the final score."""
         return external_llm_score
+    
+    def _get_all_scores(self, data_dicts: List[Dict], rollout_actor_wg, n_samples: int) -> List[float]:
+        """
+        Get all scores for both gen and pred.
+        """
+        if rollout_actor_wg is None:
+            return [0.5] * len(data_dicts), [0.5] * len(data_dicts)  # Default neutral difficulty score
+        
+        avg_gen_scores = []
+        avg_pred_scores = []
+        
+        try:
+            # Create prompts for sampling
+            prompts = []
+            for data_dict in data_dicts:
+                def extract_question(text):
+                    pattern = r'<question>(.*?)</question>'
+                    matches = re.findall(pattern, text, re.DOTALL)
+                    return matches
+                question = extract_question(data_dict.get('generation', '<question></question>').split("[Your designed task]")[-1])
+                if question != []:
+                    question = question[-1]
+                else:
+                    question = "The question is a invalid question"
+
+                #question = data_dict.get('question', '')
+                prompt_text = f"Please solve the following question/problem:\n\n{question}"
+                prompts_dict = {
+                    'prompt': [{'role': 'user', 'content': prompt_text}],
+                    'uid': data_dict['uid'],
+                    'question': question,
+                }
+                PrettyPrinter.section_header(f"Creating prompt for question: {question}")
+                prompts.append(prompts_dict)
+
+            # Repeat prompts n_samples times for sampling
+            repeated_prompts = prompts * n_samples
+            
+            # Create temporary parquet file for sampling
+            temp_file = f'{self.output_path}/temp_generalio_sampling.parquet'
+            pd.DataFrame(repeated_prompts).to_parquet(temp_file)
+            
+            # Create dataset for sampling
+            temp_data = RLHFDataset(
+                parquet_files=temp_file,
+                tokenizer=self.tokenizer,
+                prompt_key='prompt',
+                max_prompt_length=self.max_prompt_length,
+                filter_prompts=True,
+                return_raw_chat=False,
+                truncation='error'
+            )
+            
+            # Clean up temp file
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            
+            # Create data loader
+            sampler = torch.utils.data.SequentialSampler(data_source=temp_data)
+            dataloader = torch.utils.data.DataLoader(
+                dataset=temp_data,
+                batch_size=len(temp_data),
+                drop_last=False,
+                shuffle=False,
+                collate_fn=collate_fn,
+                sampler=sampler,
+            )
+            
+            # Generate responses
+            data = next(iter(dataloader))
+            batch = DataProto.from_single_dict(data)
+            gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+            gen_batch.meta_info = {
+                'eos_token_id': self.tokenizer.eos_token_id,
+                'pad_token_id': self.tokenizer.pad_token_id,
+                'recompute_log_prob': False,
+                'do_sample': True,
+                'validate': True,
+            }
+            
+            # Pad and generate
+            gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, rollout_actor_wg.world_size)
+            output_gen_batch_padded = rollout_actor_wg.generate_sequences(gen_batch_padded)
+            output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
+            
+            # Process generated responses
+            batch = batch.union(output_gen_batch)
+            batched_responses = []
+            for b in batch:
+                response_text = self.tokenizer.decode(b.batch['responses'], skip_special_tokens=True)
+                batched_responses.append({
+                    'response': response_text,
+                    'uid': b.non_tensor_batch['uid'],
+                    'question': b.non_tensor_batch['question'],
+                })
+            
+            # Group responses by UID and evaluate with LLM
+            responses_by_uid = defaultdict(list)
+            for response in batched_responses:
+                responses_by_uid[response['uid']].append(response)
+            
+            # Calculate average scores for each question
+            for data_dict in data_dicts:
+                uid = data_dict['uid']
+                if uid in responses_by_uid:
+                    gen_scores = []
+                    pred_scores = []
+                    for response_data in responses_by_uid[uid]:
+                        # Create evaluation prompt
+                        eval_prompt = f"""Please evaluate the quality of the following question and answer pair.
+Question: {response_data["question"]}
+
+Provided Answer: {response_data["response"]}
+
+First, analyze the question in the <think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the question clear and well-formed?
+- Is it complete and understandable?
+- Does it make logical sense?
+- Is it relevant and appropriate?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the question is perfect, complete, and clear
+- 8-9 means the question is mostly clear but may have minor issues
+- 5-7 means the question is partially clear but has significant issues
+- 2-4 means the question has some merit but is largely unclear or irrelevant
+- 1 means the question is completely wrong or irrelevant (Also rate as 1 if the question is not a valid question)
+
+<score>X</score> (where X is an integer from 1 to 10)
+
+Then analyze the answer in the <think> and </think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the answer correct and accurate?
+- Is it complete and comprehensive?
+- Does it properly address the question?
+- Is it well-structured and clear?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the answer is perfect, complete, and correct
+- 8-9 means the answer is mostly correct but may have minor issues
+- 5-7 means the answer is partially correct but has significant issues
+- 2-4 means the answer has some merit but is largely incorrect
+- 1 means the answer is completely wrong or irrelevant
+
+<score>X</score> (where X is an integer from 1 to 10)"""
+                        
+                        score = self._generate_llm_response(eval_prompt)
+                        gen_scores.append(score[0])
+                        pred_scores.append(score[1])
+                    
+                    avg_gen_score = np.mean(gen_scores) if gen_scores else 0.5
+                    avg_pred_score = np.mean(pred_scores) if pred_scores else 0.5
+                    avg_gen_scores.append(avg_gen_score)
+                    avg_pred_scores.append(avg_pred_score)
+                else:
+                    avg_gen_scores.append(0.5)
+                    avg_pred_scores.append(0.5) # Default if no responses generated
+                    
+        except Exception as e:
+            print(f"Error in solver score computation: {e}")
+            avg_gen_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
+            avg_pred_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
+        
+        return avg_gen_scores, avg_pred_scores
 
     def _get_solver_scores_from_actor(self, data_dicts: List[Dict], rollout_actor_wg, n_samples: int) -> List[float]:
         """
@@ -1552,20 +1730,58 @@ Then provide a score from 1 to 10 between <score> and </score> where:
             all_scores['accuracy'] = all_scores['llm_judge_score']  # For compatibility
         elif problem_type.startswith('pred_gen'):
             PrettyPrinter.section_header("Computing Prediction and Generation Rewards for GeneralIO Tasks in a single inference")
+
+            reward_tensor_gen = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+            reward_tensor_pred = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+            all_scores_gen = defaultdict(list)
+            all_scores_pred = defaultdict(list)
+
+            avg_gen_scores, avg_pred_scores = self._get_all_scores(data_dicts, rollout_actor_wg, n_samples)
             
             # For prediction generation tasks, use LLM judge score directly
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
-                
-                # Get LLM judge score directly
-                llm_score = self._generate_llm_response(self._generate_prompt_for_pred_gen(data_dict))
 
-                gen_score = llm_score[0]
-                pred_score = llm_score[1]
-                
+                gen_score = avg_gen_scores[i]
+                pred_score = avg_pred_scores[i]
+
+                difficulty_score = 1 - pred_score
+                final_gen_score = 0.5 * gen_score + 0.5 * difficulty_score
+
+                reward_tensor_gen[i, valid_response_length - 1] = final_gen_score
+                all_scores_gen['llm_judge_score'].append(gen_score)
+                all_scores_gen['difficulty_score'].append(difficulty_score)
+                all_scores_gen['combined_score'].append(final_gen_score)
+                def extract_question(text):
+                    pattern = r'<question>(.*?)</question>'
+                    matches = re.findall(pattern, text, re.DOTALL)
+                    return matches
+                question = extract_question(data_dict.get('generation', '<question></question>').split("[Your designed task]")[-1])
+                if question != []:
+                    question = question[-1]
+                else:
+                    question = None
+                # For gen tasks, add to valid_questions
+                if question!=None:
+                    valid_questions.append({
+                        'question': question,
+                        'generation': data_dict.get('generation', ''),
+                        'thought': data_dict.get('thought', ''),
+                        'answer': data_dict.get('generation', ''),
+                        'uid': data_dict['uid'],
+                    })
+                else:
+                    PrettyPrinter.section_header(f"Processing Question {i+1}/{len(data_dicts)}")
+                    PrettyPrinter.status(f"Question: {data_dict.get('question', '')}", "", "info")
+                    PrettyPrinter.status(f"Generation: {data_dict.get('generation', '')}", "", "info")
+                    PrettyPrinter.status(f"Thought: {data_dict.get('thought', '')}", "", "info")
+                    PrettyPrinter.status(f"LLM Judge Score: {external_llm_score:.4f}", f"Difficulty Score: {difficulty_score:.4f}", "info")
+                    PrettyPrinter.status(f"Combined Score: {final_score:.4f}", "", "info")
+                    print("\n" + "-"*80 + "\n")
+
                 if self.split == 'train':
-                    if llm_score > 0.5:  # Consider scores > 0.5 as correct
-                        reward_tensor[i, valid_response_length - 1] = llm_score
+                    if pred_score > 0.5:  # Consider scores > 0.5 as correct
+                        reward_tensor_pred[i, valid_response_length - 1] = pred_score
                         correct_predictions.append({
                             'question': data_dict.get('question', ''),
                             'answer': data_dict.get('answer', ''),
@@ -1573,20 +1789,22 @@ Then provide a score from 1 to 10 between <score> and </score> where:
                             'uid': data_dict['uid'],
                         })
                     else:
-                        reward_tensor[i, valid_response_length - 1] = llm_score
+                        reward_tensor[i, valid_response_length - 1] = pred_score
                 elif self.split == 'test':
-                    reward_tensor[i, valid_response_length - 1] = llm_score
-                    if llm_score > 0.5:
+                    reward_tensor_pred[i, valid_response_length - 1] = pred_score
+                    if pred_score > 0.5:
                         correct_predictions.append({
                             'question': data_dict.get('question', ''),
                             'answer': data_dict.get('answer', ''),
                             'thought': data_dict.get('thought', ''),
                             'uid': data_dict['uid'],
                         })
-                
-                all_scores['llm_judge_score'].append(llm_score)
-            
-            all_scores['accuracy'] = all_scores['llm_judge_score']  # For compatibility
+                all_scores_pred['llm_judge_score'].append(pred_score)
+
+            all_scores_gen['solver_avg_scores'] = avg_pred_scores
+            all_scores_pred['accuracy'] = all_scores['llm_judge_score']  # For compatibility
+
+            return (reward_tensor_gen, reward_tensor_pred), (all_scores_gen, all_scores_pred), valid_questions
         elif problem_type.startswith('judge_solver'):
             PrettyPrinter.section_header("Computing Judging Solver Rewards for GeneralIO Tasks")
 
