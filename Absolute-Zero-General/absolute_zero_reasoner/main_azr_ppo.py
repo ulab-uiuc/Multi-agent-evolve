@@ -156,6 +156,7 @@ def main_task(config, compute_score=None):
             top_p=getattr(config.reward_fn, 'top_p', 0.95),
             stream=getattr(config.reward_fn, 'stream', True),
             boxed_retry=config.reward_fn.boxed_retry,
+            use_self_judge=getattr(config.azr, 'self_judge', True),
         )
 
         # For validation, use BenchmarkEvaluationRewardManager instead

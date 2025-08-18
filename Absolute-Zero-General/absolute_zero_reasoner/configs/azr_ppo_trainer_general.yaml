@@ -172,6 +172,7 @@ azr:
   pretrain_pred_steps: -1
   random_print_max_programs: 3
   train_propose: False  # Simplified for general tasks
+  self_judge: True
   
   # Benchmark evaluation settings for general tasks
   benchmark_validation_dir: "./validation_datasets"
