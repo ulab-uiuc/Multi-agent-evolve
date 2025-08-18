@@ -90,39 +90,43 @@ def load_gsm8k_dataset(split: str = "test", num_samples: int = None) -> List[Dic
 #     return data
 
 
-# def load_mmlu_dataset(subject: str = "abstract_algebra", split: str = "test", num_samples: int = None) -> List[Dict]:
-#     """Load MMLU dataset for a specific subject."""
-#     dataset = load_dataset("cais/mmlu", subject, split=split)
+def load_mmlu_dataset(subject: str = "abstract_algebra", split: str = "test", num_samples: int = None) -> List[Dict]:
+    """Load MMLU dataset for a specific subject."""
+    dataset = load_dataset("cais/mmlu", subject, split=split)
     
-#     data = []
-#     for i, item in enumerate(dataset):
-#         if num_samples and i >= num_samples:
-#             break
+    data = []
+    for i, item in enumerate(dataset):
+        if num_samples and i >= num_samples:
+            break
             
-#         # Format choices
-#         choices = item['choices']
-#         choice_text = "\n".join([f"{chr(65+j)}. {choice}" for j, choice in enumerate(choices)])
+        # Format choices
+        choices = item['choices']
+        choice_text = "\n".join([f"{chr(65+j)}. {choice}" for j, choice in enumerate(choices)])
         
-#         prompt_text = f"""Answer the following multiple choice question:
+        prompt_text = f"""Answer the following multiple choice question:
 
-# Question: {item['question']}
+Question: {item['question']}
 
-# Choices:
-# {choice_text}
+Choices:
+{choice_text}
 
-# Choose the correct answer (A, B, C, or D):"""
+Choose the correct answer (A, B, C, or D):"""
         
-#         data.append({
-#             "prompt": [{"role": "user", "content": prompt_text}],
-#             "ground_truth": chr(65 + item['answer']),  # Convert 0,1,2,3 to A,B,C,D
-#             "answer": chr(65 + item['answer']),
-#             "data_source": f"mmlu_{subject}",
-#             "subject": subject,
-#             "choices": choices,
-#             "extra_info": {"metric": "multiple_choice_accuracy"}
-#         })
-    
-#     return data
+        data.append({
+            "prompt": [{"role": "user", "content": prompt_text}],
+            "ground_truth": chr(65 + item['answer']),  # Convert 0,1,2,3 to A,B,C,D
+            "answer": chr(65 + item['answer']),
+            "data_source": f"mmlu_{subject}",
+            "subject": subject,
+            "choices": choices,
+            "extra_info": {"metric": "multiple_choice_accuracy"}
+        })
+        print(f"Loaded {subject} sample {i+1}: {item['question']}")
+        print(f"Choices: {choice_text}")
+        print(f"Ground truth: {data[-1]['ground_truth']}")
+        print(f"Answer: {data[-1]['answer']}")
+        print("-" * 40)
+    return data
 
 
 def load_arc_dataset(split: str = "test", challenge: bool = True, num_samples: int = None) -> List[Dict]:
@@ -216,15 +220,15 @@ def main():
     print(f"Number of samples per dataset: {args.num_samples or 'All'}")
     
     # Load and save datasets
-    if "math" in datasets_to_load:
-        print("\nLoading MATH dataset...")
-        math_data = load_math_dataset(num_samples=args.num_samples)
-        save_dataset_to_parquet(math_data, args.output_dir, "math")
+    # if "math" in datasets_to_load:
+    #     print("\nLoading MATH dataset...")
+    #     math_data = load_math_dataset(num_samples=args.num_samples)
+    #     save_dataset_to_parquet(math_data, args.output_dir, "math")
     
-    if "gsm8k" in datasets_to_load:
-        print("\nLoading GSM8K dataset...")
-        gsm8k_data = load_gsm8k_dataset(num_samples=args.num_samples)
-        save_dataset_to_parquet(gsm8k_data, args.output_dir, "gsm8k")
+    # if "gsm8k" in datasets_to_load:
+    #     print("\nLoading GSM8K dataset...")
+    #     gsm8k_data = load_gsm8k_dataset(num_samples=args.num_samples)
+    #     save_dataset_to_parquet(gsm8k_data, args.output_dir, "gsm8k")
     
     # if "hellaswag" in datasets_to_load:
     #     print("\nLoading HellaSwag dataset...")
@@ -239,18 +243,18 @@ def main():
             mmlu_data = load_mmlu_dataset(subject=subject, num_samples=args.num_samples)
             save_dataset_to_parquet(mmlu_data, args.output_dir, f"mmlu_{subject}")
     
-    if "arc" in datasets_to_load:
-        print("\nLoading ARC dataset...")
-        arc_challenge_data = load_arc_dataset(challenge=True, num_samples=args.num_samples)
-        save_dataset_to_parquet(arc_challenge_data, args.output_dir, "arc_challenge")
+    # if "arc" in datasets_to_load:
+    #     print("\nLoading ARC dataset...")
+    #     arc_challenge_data = load_arc_dataset(challenge=True, num_samples=args.num_samples)
+    #     save_dataset_to_parquet(arc_challenge_data, args.output_dir, "arc_challenge")
         
-        arc_easy_data = load_arc_dataset(challenge=False, num_samples=args.num_samples)
-        save_dataset_to_parquet(arc_easy_data, args.output_dir, "arc_easy")
+    #     arc_easy_data = load_arc_dataset(challenge=False, num_samples=args.num_samples)
+    #     save_dataset_to_parquet(arc_easy_data, args.output_dir, "arc_easy")
     
-    if "truthfulqa" in datasets_to_load:
-        print("\nLoading TruthfulQA dataset...")
-        truthfulqa_data = load_truthfulqa_dataset(num_samples=args.num_samples)
-        save_dataset_to_parquet(truthfulqa_data, args.output_dir, "truthfulqa")
+    # if "truthfulqa" in datasets_to_load:
+    #     print("\nLoading TruthfulQA dataset...")
+    #     truthfulqa_data = load_truthfulqa_dataset(num_samples=args.num_samples)
+    #     save_dataset_to_parquet(truthfulqa_data, args.output_dir, "truthfulqa")
     
     print(f"\nAll datasets prepared and saved to {args.output_dir}")
 

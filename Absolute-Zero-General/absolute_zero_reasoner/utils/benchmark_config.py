@@ -119,7 +119,7 @@ class BenchmarkConfig:
 # Example usage and default configuration
 DEFAULT_BENCHMARK_CONFIG = {
     'validation_dir': './validation_datasets',
-    'default_benchmarks': ['math', 'gsm8k', 'truthfulqa', 'arc_challenge','arc_easy',],
+    'default_benchmarks': ['math', 'gsm8k', 'truthfulqa', 'arc_challenge','arc_easy', 'mmlu_abstract_algebra', 'mmlu_anatomy', 'mmlu_astronomy', 'mmlu_business_ethics', 'mmlu_clinical_knowledge'],
     'evaluation_frequency': 100,  # Evaluate every 100 steps
     'max_samples_per_benchmark': 100,  # Limit samples for faster evaluation
 }
