@@ -904,6 +904,7 @@ class GeneralIORewardManager:
         top_p: float = 0.95,
         stream: bool = True,
         boxed_retry: bool = False,
+        judge_with_actor: bool = False,
         train_judge: bool = False,
         **kwargs
     ):
@@ -922,120 +923,432 @@ class GeneralIORewardManager:
         self.top_p = top_p
         self.stream = stream
         self.boxed_retry = boxed_retry
+        self.judge_with_actor = judge_with_actor
         self.train_judge = train_judge
+
+        assert not self.train_judge or self.judge_with_actor, "judge_with_actor must be activated if train_judge is True"
         
         # Initialize the external LLM client
         self.client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key="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"
         )
+
+    def _get_all_scores(self, data_dicts: List[Dict], rollout_actor_wg, n_samples: int) -> List[float]:
+        """
+        Get all scores for both gen and pred.
+        """
+        if rollout_actor_wg is None:
+            return [0.5] * len(data_dicts), [0.5] * len(data_dicts)  # Default neutral difficulty score
         
+        avg_gen_scores = []
+        avg_pred_scores = []
+        
+        try:
+            # Create prompts for sampling
+            prompts = []
+            for data_dict in data_dicts:
+                def extract_question(text):
+                    pattern = r'<question>(.*?)</question>'
+                    matches = re.findall(pattern, text, re.DOTALL)
+                    return matches
+                question = extract_question(data_dict.get('generation', '<question></question>').split("[Your designed task]")[-1])
+                if question != []:
+                    question = question[-1]
+                else:
+                    question = "The question is a invalid question"
+
+                #question = data_dict.get('question', '')
+                prompt_text = f"Please solve the following question/problem:\n\n{question}"
+                prompts_dict = {
+                    'prompt': [{'role': 'user', 'content': prompt_text}],
+                    'uid': data_dict['uid'],
+                    'question': question,
+                }
+                PrettyPrinter.section_header(f"Creating prompt for question: {question}")
+                prompts.append(prompts_dict)
+
+            # Repeat prompts n_samples times for sampling
+            repeated_prompts = prompts * n_samples
+            
+            # Create temporary parquet file for sampling
+            temp_file = f'{self.output_path}/temp_generalio_sampling.parquet'
+            pd.DataFrame(repeated_prompts).to_parquet(temp_file)
+            
+            # Create dataset for sampling
+            temp_data = RLHFDataset(
+                parquet_files=temp_file,
+                tokenizer=self.tokenizer,
+                prompt_key='prompt',
+                max_prompt_length=self.max_prompt_length,
+                filter_prompts=True,
+                return_raw_chat=False,
+                truncation='error'
+            )
+            
+            # Clean up temp file
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            
+            # Create data loader
+            sampler = torch.utils.data.SequentialSampler(data_source=temp_data)
+            dataloader = torch.utils.data.DataLoader(
+                dataset=temp_data,
+                batch_size=len(temp_data),
+                drop_last=False,
+                shuffle=False,
+                collate_fn=collate_fn,
+                sampler=sampler,
+            )
+            
+            # Generate responses
+            data = next(iter(dataloader))
+            batch = DataProto.from_single_dict(data)
+            gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+            gen_batch.meta_info = {
+                'eos_token_id': self.tokenizer.eos_token_id,
+                'pad_token_id': self.tokenizer.pad_token_id,
+                'recompute_log_prob': False,
+                'do_sample': True,
+                'validate': True,
+            }
+            
+            # Pad and generate
+            gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, rollout_actor_wg.world_size)
+            output_gen_batch_padded = rollout_actor_wg.generate_sequences(gen_batch_padded)
+            output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
+            
+            # Process generated responses
+            batch = batch.union(output_gen_batch)
+            batched_responses = []
+            for b in batch:
+                response_text = self.tokenizer.decode(b.batch['responses'], skip_special_tokens=True)
+                batched_responses.append({
+                    'response': response_text,
+                    'uid': b.non_tensor_batch['uid'],
+                    'question': b.non_tensor_batch['question'],
+                })
+            
+            # Group responses by UID and evaluate with LLM
+            responses_by_uid = defaultdict(list)
+            for response in batched_responses:
+                responses_by_uid[response['uid']].append(response)
+
+            if self.judge_with_actor:
+                # Use actor model to judge (self-judge with actor)
+                # Build evaluation prompts (one per generated answer)
+                eval_prompts = []
+                for uid, resp_list in responses_by_uid.items():
+                    for idx, resp in enumerate(resp_list):
+                        eval_text = f"""Please evaluate the quality of the following question and answer pair.
+Question: {resp["question"]}
+
+Provided Answer: {resp["response"]}
+
+First, analyze the question in the <think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the question clear and well-formed?
+- Is it complete and understandable?
+- Does it make logical sense?
+- Is it relevant and appropriate?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the question is perfect, complete, and clear
+- 8-9 means the question is mostly clear but may have minor issues
+- 5-7 means the question is partially clear but has significant issues
+- 2-4 means the question has some merit but is largely unclear or irrelevant
+- 1 means the question is completely wrong or irrelevant (Also rate as 1 if the question is not a valid question)
+
+<score>X</score> (where X is an integer from 1 to 10)
+
+Then analyze the answer in the <think> and </think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the answer correct and accurate?
+- Is it complete and comprehensive?
+- Does it properly address the question?
+- Is it well-structured and clear?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the answer is perfect, complete, and correct
+- 8-9 means the answer is mostly correct but may have minor issues
+- 5-7 means the answer is partially correct but has significant issues
+- 2-4 means the answer has some merit but is largely incorrect
+- 1 means the answer is completely wrong or irrelevant
+
+<score>X</score> (where X is an integer from 1 to 10)"""
+                        eval_prompts.append({
+                            'prompt': [{'role': 'user', 'content': eval_text}],
+                            'uid': uid,
+                        })
+
+                # Optionally repeat judgments (n_samples) if desired
+                eval_prompts = eval_prompts  # could multiply by another factor if multi-judging needed
+
+                temp_judge_file = f'{self.output_path}/temp_generalio_judge.parquet'
+                pd.DataFrame(eval_prompts).to_parquet(temp_judge_file)
+
+                judge_dataset = RLHFDataset(
+                    parquet_files=temp_judge_file,
+                    tokenizer=self.tokenizer,
+                    prompt_key='prompt',
+                    max_prompt_length=self.max_prompt_length,
+                    filter_prompts=True,
+                    return_raw_chat=False,
+                    truncation='error'
+                )
+                if os.path.exists(temp_judge_file):
+                    os.remove(temp_judge_file)
+
+                judge_sampler = torch.utils.data.SequentialSampler(data_source=judge_dataset)
+                judge_loader = torch.utils.data.DataLoader(
+                    dataset=judge_dataset,
+                    batch_size=len(judge_dataset),
+                    drop_last=False,
+                    shuffle=False,
+                    collate_fn=collate_fn,
+                    sampler=judge_sampler,
+                )
+
+                judge_data = next(iter(judge_loader))
+                judge_batch = DataProto.from_single_dict(judge_data)
+                gen_judge_batch = judge_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+                gen_judge_batch.meta_info = {
+                    'eos_token_id': self.tokenizer.eos_token_id,
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'recompute_log_prob': False,
+                    'do_sample': True,
+                    'validate': True,
+                }
+
+                gen_judge_padded, pad_size_j = pad_dataproto_to_divisor(gen_judge_batch, rollout_actor_wg.world_size)
+                out_judge_padded = rollout_actor_wg.generate_sequences(gen_judge_padded)
+                out_judge = unpad_dataproto(out_judge_padded, pad_size=pad_size_j)
+                judge_batch = judge_batch.union(out_judge)
+
+                # Collect raw judge outputs
+                uid2_q_scores = defaultdict(list)
+                uid2_a_scores = defaultdict(list)
+                score_pattern = re.compile(r'<score>\s*(\d+)\s*</score>', re.IGNORECASE)
+
+                for jb in judge_batch:
+                    uid = jb.non_tensor_batch['uid']
+                    text = self.tokenizer.decode(jb.batch['responses'], skip_special_tokens=True)
+                    scores = score_pattern.findall(text)
+                    # Expect two scores: question then answer
+                    if len(scores) >= 2:
+                        try:
+                            q= (int(score[0]) - 1) / 9.0
+                            a = (int(score[1]) - 1) / 9.0
+                            uid2_q_scores[uid].append(min(1.0, max(0.0, q)))
+                            uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
+                        except:
+                            pass
+
+                # Aggregate per original data_dict
+                for data_dict in data_dicts:
+                    uid = data_dict['uid']
+                    if uid2_q_scores.get(uid):
+                        avg_gen_scores.append(float(np.mean(uid2_q_scores[uid])))
+                    else:
+                        avg_gen_scores.append(0.5)
+                    if uid2_a_scores.get(uid):
+                        avg_pred_scores.append(float(np.mean(uid2_a_scores[uid])))
+                    else:
+                        avg_pred_scores.append(0.5)
+            else:
+                # Calculate average scores for each question
+                for data_dict in data_dicts:
+                    uid = data_dict['uid']
+                    if uid in responses_by_uid:
+                        gen_scores = []
+                        pred_scores = []
+                        for response_data in responses_by_uid[uid]:
+                            # Create evaluation prompt
+                            eval_prompt = f"""Please evaluate the quality of the following question and answer pair.
+Question: {response_data["question"]}
+
+Provided Answer: {response_data["response"]}
+
+First, analyze the question in the <think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the question clear and well-formed?
+- Is it complete and understandable?
+- Does it make logical sense?
+- Is it relevant and appropriate?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the question is perfect, complete, and clear
+- 8-9 means the question is mostly clear but may have minor issues
+- 5-7 means the question is partially clear but has significant issues
+- 2-4 means the question has some merit but is largely unclear or irrelevant
+- 1 means the question is completely wrong or irrelevant (Also rate as 1 if the question is not a valid question)
+
+<score>X</score> (where X is an integer from 1 to 10)
+
+Then analyze the answer in the <think> and </think> tags below:
+
+<think>
+Consider the following criteria when evaluating:
+- Is the answer correct and accurate?
+- Is it complete and comprehensive?
+- Does it properly address the question?
+- Is it well-structured and clear?
+- Analyze any strengths and weaknesses
+- Determine what score is most appropriate
+
+[Write your detailed analysis here]
+</think>
+
+Then provide a score from 1 to 10 between <score> and </score> where:
+- 10 means the answer is perfect, complete, and correct
+- 8-9 means the answer is mostly correct but may have minor issues
+- 5-7 means the answer is partially correct but has significant issues
+- 2-4 means the answer has some merit but is largely incorrect
+- 1 means the answer is completely wrong or irrelevant
+
+<score>X</score> (where X is an integer from 1 to 10)"""
+                            
+                            score = self._generate_llm_response(eval_prompt)
+                            gen_scores.append(score[0])
+                            pred_scores.append(score[1])
+                        
+                        avg_gen_score = np.mean(gen_scores) if gen_scores else 0.5
+                        avg_pred_score = np.mean(pred_scores) if pred_scores else 0.5
+                        avg_gen_scores.append(avg_gen_score)
+                        avg_pred_scores.append(avg_pred_score)
+                    else:
+                        avg_gen_scores.append(0.5)
+                        avg_pred_scores.append(0.5) # Default if no responses generated
+                        
+        except Exception as e:
+            print(f"Error in solver score computation: {e}")
+            avg_gen_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
+            avg_pred_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
+        
+        return avg_gen_scores, avg_pred_scores
+     
     def _generate_llm_response(self, prompt: str) -> float:
         """Call the external LLM for evaluation."""
-        if self.train_judge:
-            # Use a judge LLM to generate evaluation, this LLM will receive a reward as an individual task
-            # Judge will need an individual pool of data
-            raise NotImplementedError("Judge LLM evaluation is not implemented yet.")
-        else:
-            try:
-                completion = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    max_tokens=self.max_tokens,
-                    stream=self.stream
-                )
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
+                top_p=self.top_p,
+                max_tokens=self.max_tokens,
+                stream=self.stream
+            )
+            
+            if self.stream:
+                result = ""
+                for chunk in completion:
+                    if chunk.choices[0].delta.content is not None:
+                        result += chunk.choices[0].delta.content
                 
-                if self.stream:
-                    result = ""
-                    for chunk in completion:
-                        if chunk.choices[0].delta.content is not None:
-                            result += chunk.choices[0].delta.content
-                    
-                    # Extract score from result
-                    result = result.strip()
-                    print(f"LLM Response: {result}")  # Debugging output
-                    
-                    # Try to extract score from <score></score> tags
-                    import re
-                    score_match = re.findall(r'<score>(\d+)</score>', result, re.IGNORECASE)
-                    if len(score_match) > 1:
-                        print("Multiple score available in LLM response, make sure this is what you want.")
-                        assert len(score_match) == 2, "Expected exactly two scores in the response."
-                        score_list = []
-                        for score in score_match:
-                            score = int(score)
-                            score = (score - 1) / 9.0
-                            score_list.append(min(1.0, max(0.0, score)))
-                        return score_list
-                    elif score_match:
-                        score = int(score_match.group(1))
-                        # Convert from 1-10 scale to 0-1 scale
-                        score = (score - 1) / 9.0  # Maps 1->0, 10->1
-                        return min(1.0, max(0.0, score))
-                    else:
-                        # Fallback: try to extract any number between 1-10
-                        fallback_match = re.findall(r'(\d+)', result)
-                        if len(fallback_match) > 1:
-                            print("Multiple score available in LLM response, make sure this is what you want.")
-                            assert len(fallback_match) == 2, "Expected exactly two scores in the response."
-                            score_list = []
-                            for score in fallback_match:
-                                score = int(score)
-                                if 1 <= score <= 10:
-                                    score = (score - 1) / 9.0
-                                    score_list.append(min(1.0, max(0.0, score)))
-                            return score_list
-                        elif fallback_match:
-                            score = int(fallback_match.group(1))
-                            if 1 <= score <= 10:
-                                score = (score - 1) / 9.0
-                                return min(1.0, max(0.0, score))
-                        return 0.0
+                # Extract score from result
+                result = result.strip()
+                print(f"LLM Response: {result}")  # Debugging output
+                
+                # Try to extract score from <score></score> tags
+                import re
+                score_match = re.findall(r'<score>(\d+)</score>', result, re.IGNORECASE)
+                if len(score_match) > 1:
+                    print("Multiple score available in LLM response, make sure this is what you want.")
+                    assert len(score_match) == 2, "Expected exactly two scores in the response."
+                    score_list = []
+                    for score in score_match:
+                        score = int(score)
+                        score = (score - 1) / 9.0
+                        score_list.append(min(1.0, max(0.0, score)))
+                    return score_list
+                elif score_match:
+                    score = int(score_match.group(1))
+                    # Convert from 1-10 scale to 0-1 scale
+                    score = (score - 1) / 9.0  # Maps 1->0, 10->1
+                    return min(1.0, max(0.0, score))
                 else:
-                    result = completion.choices[0].message.content.strip()
-                    print(f"LLM Response: {result}")  # Debugging output
-                    
-                    # Try to extract score from <score></score> tags
-                    import re
-                    score_match = re.findall(r'<score>(\d+)</score>', result, re.IGNORECASE)
-                    if len(score_match) > 1:
+                    # Fallback: try to extract any number between 1-10
+                    fallback_match = re.findall(r'(\d+)', result)
+                    if len(fallback_match) > 1:
                         print("Multiple score available in LLM response, make sure this is what you want.")
-                        assert len(score_match) == 2, "Expected exactly two scores in the response."
+                        assert len(fallback_match) == 2, "Expected exactly two scores in the response."
                         score_list = []
-                        for score in score_match:
+                        for score in fallback_match:
                             score = int(score)
-                            score = (score - 1) / 9.0
-                            score_list.append(min(1.0, max(0.0, score)))
-                        return score_list
-                    elif score_match:
-                        score = int(score_match.group(1))
-                        # Convert from 1-10 scale to 0-1 scale
-                        score = (score - 1) / 9.0  # Maps 1->0, 10->1
-                        return min(1.0, max(0.0, score))
-                    else:
-                        # Fallback: try to extract any number between 1-10
-                        fallback_match = re.findall(r'(\d+)', result)
-                        if len(fallback_match) > 1:
-                            print("Multiple score available in LLM response, make sure this is what you want.")
-                            assert len(fallback_match) == 2, "Expected exactly two scores in the response."
-                            score_list = []
-                            for score in fallback_match:
-                                score = int(score)
-                                if 1 <= score <= 10:
-                                    score = (score - 1) / 9.0
-                                    score_list.append(min(1.0, max(0.0, score)))
-                            return score_list
-                        elif fallback_match:
-                            score = int(fallback_match.group(1))
                             if 1 <= score <= 10:
                                 score = (score - 1) / 9.0
-                                return min(1.0, max(0.0, score))
-                        return 0.0
-            except Exception as e:
-                print(f"Error in LLM response generation: {e}")
-                return 0.0
+                                score_list.append(min(1.0, max(0.0, score)))
+                        return score_list
+                    elif fallback_match:
+                        score = int(fallback_match.group(1))
+                        if 1 <= score <= 10:
+                            score = (score - 1) / 9.0
+                            return min(1.0, max(0.0, score))
+                    return 0.0
+            else:
+                result = completion.choices[0].message.content.strip()
+                print(f"LLM Response: {result}")  # Debugging output
+                
+                # Try to extract score from <score></score> tags
+                import re
+                score_match = re.findall(r'<score>(\d+)</score>', result, re.IGNORECASE)
+                if len(score_match) > 1:
+                    print("Multiple score available in LLM response, make sure this is what you want.")
+                    assert len(score_match) == 2, "Expected exactly two scores in the response."
+                    score_list = []
+                    for score in score_match:
+                        score = int(score)
+                        score = (score - 1) / 9.0
+                        score_list.append(min(1.0, max(0.0, score)))
+                    return score_list
+                elif score_match:
+                    score = int(score_match.group(1))
+                    # Convert from 1-10 scale to 0-1 scale
+                    score = (score - 1) / 9.0  # Maps 1->0, 10->1
+                    return min(1.0, max(0.0, score))
+                else:
+                    # Fallback: try to extract any number between 1-10
+                    fallback_match = re.findall(r'(\d+)', result)
+                    if len(fallback_match) > 1:
+                        print("Multiple score available in LLM response, make sure this is what you want.")
+                        assert len(fallback_match) == 2, "Expected exactly two scores in the response."
+                        score_list = []
+                        for score in fallback_match:
+                            score = int(score)
+                            if 1 <= score <= 10:
+                                score = (score - 1) / 9.0
+                                score_list.append(min(1.0, max(0.0, score)))
+                        return score_list
+                    elif fallback_match:
+                        score = int(fallback_match.group(1))
+                        if 1 <= score <= 10:
+                            score = (score - 1) / 9.0
+                            return min(1.0, max(0.0, score))
+                    return 0.0
+        except Exception as e:
+            print(f"Error in LLM response generation: {e}")
+            return 0.0
 
     def _generate_prompt_for_pred_gen(self, data_dict: Dict) -> str:
         """Generate the LLM as judge prompt for evaluating the question and the answer quality at the same time. Extraction will be done elsewhere."""
