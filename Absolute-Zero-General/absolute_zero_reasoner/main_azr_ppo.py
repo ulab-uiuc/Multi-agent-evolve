@@ -156,6 +156,8 @@ def main_task(config, compute_score=None):
             top_p=getattr(config.reward_fn, 'top_p', 0.95),
             stream=getattr(config.reward_fn, 'stream', True),
             boxed_retry=config.reward_fn.boxed_retry,
+            judge_with_actor=config.reward_fn.judge_with_actor,
+            # judge_with_actor only available for infering question and answer score together
         )
 
         # For validation, use the same GeneralIORewardManager with test split
@@ -175,6 +177,7 @@ def main_task(config, compute_score=None):
             top_p=getattr(config.reward_fn, 'top_p', 0.95),
             stream=getattr(config.reward_fn, 'stream', True),
             boxed_retry=config.reward_fn.boxed_retry,
+            # maybe judge_with_actor as well?
         )
     else:
         # Use CodeIORewardManager for code tasks (default behavior)

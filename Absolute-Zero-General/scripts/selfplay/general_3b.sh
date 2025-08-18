@@ -6,7 +6,7 @@ export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export RAY_memory_monitor_refresh_ms=0
 export RAY_LOGGING_LEVEL=DEBUG
 export HYDRA_FULL_ERROR=1
-export CUDA_VISIBLE_DEVICES="1,2"
+export CUDA_VISIBLE_DEVICES="7,8"
 export NCCL_P2P_DISABLE=1
 
 python -m absolute_zero_reasoner.main_azr_ppo \
@@ -65,6 +65,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     reward_fn.max_tokens=1000 \
     reward_fn.top_p=0.95 \
     reward_fn.stream=true \
+    +reward_fn.judge_with_actor=true \
     +trainer.val_generations_to_log_to_wandb=0 \
     azr.task_type=general \
     azr.data_selection_strategy.update_iteration=1 \
@@ -83,6 +84,5 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.data_selection_strategy.valid_question_filter=all \
     azr.data_selection_strategy.batched_estimate=false \
     azr.data_selection_strategy.io_n=1 \
-    trainer.debug=False \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     +trainer.total_epochs=30 $@
