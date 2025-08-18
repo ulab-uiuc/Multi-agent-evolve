@@ -905,6 +905,7 @@ class GeneralIORewardManager:
         stream: bool = True,
         boxed_retry: bool = False,
         use_self_judge: bool = False,
+        self_judge_batch_size: int = 8,  # 新增批量处理大小
         **kwargs
     ):
         self.tokenizer = tokenizer
@@ -923,6 +924,7 @@ class GeneralIORewardManager:
         self.stream = stream
         self.boxed_retry = boxed_retry
         self.use_self_judge = use_self_judge
+        self.self_judge_batch_size = self_judge_batch_size
         
         # Initialize the external LLM client (only if not using self-judge)
         if not self.use_self_judge:
@@ -995,22 +997,28 @@ class GeneralIORewardManager:
             print(f"Error in LLM response generation: {e}")
             return 0.0
 
-    def _generate_self_judge_response(self, prompt: str, rollout_actor_wg) -> float:
-        """Use the actor model itself for self-evaluation."""
+    def _generate_self_judge_responses_batch(self, prompts: List[str], rollout_actor_wg, batch_size: int = 8) -> List[float]:
+        """Use the actor model itself for self-evaluation in batches for efficiency."""
         if rollout_actor_wg is None:
-            print("Warning: rollout_actor_wg is None, falling back to 0.5 score")
-            return 0.5
+            print("Warning: rollout_actor_wg is None, falling back to 0.5 scores")
+            return [0.5] * len(prompts)
+        
+        if not prompts:
+            return []
         
         try:
-            # Create a temporary prompt for self-judging
-            prompts_dict = {
-                'prompt': [{'role': 'user', 'content': prompt}],
-                'uid': str(uuid.uuid4()),
-            }
+            # Create prompts dict for all evaluation requests
+            prompts_dicts = []
+            for i, prompt in enumerate(prompts):
+                prompts_dicts.append({
+                    'prompt': [{'role': 'user', 'content': prompt}],
+                    'uid': str(uuid.uuid4()),
+                    'eval_idx': i,  # Track original position
+                })
             
             # Create temporary parquet file
-            temp_file = f'{self.output_path}/temp_self_judge.parquet'
-            pd.DataFrame([prompts_dict]).to_parquet(temp_file)
+            temp_file = f'{self.output_path}/temp_self_judge_batch.parquet'
+            pd.DataFrame(prompts_dicts).to_parquet(temp_file)
             
             # Create dataset for self-judging
             temp_data = RLHFDataset(
@@ -1027,64 +1035,78 @@ class GeneralIORewardManager:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
             
-            # Create data loader
-            sampler = torch.utils.data.SequentialSampler(data_source=temp_data)
-            dataloader = torch.utils.data.DataLoader(
-                dataset=temp_data,
-                batch_size=1,
-                drop_last=False,
-                shuffle=False,
-                collate_fn=collate_fn,
-                sampler=sampler,
-            )
+            # Process in batches
+            all_scores = [0.5] * len(prompts)  # Initialize with default scores
             
-            # Generate response using the actor model
-            data = next(iter(dataloader))
-            batch = DataProto.from_single_dict(data)
-            gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-            gen_batch.meta_info = {
-                'eos_token_id': self.tokenizer.eos_token_id,
-                'pad_token_id': self.tokenizer.pad_token_id,
-                'recompute_log_prob': False,
-                'do_sample': True,
-                'validate': True,
-                'temperature': self.temperature,
-                'max_new_tokens': self.max_tokens,
-                'top_p': self.top_p,
-            }
-            
-            # Pad and generate
-            gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, rollout_actor_wg.world_size)
-            output_gen_batch_padded = rollout_actor_wg.generate_sequences(gen_batch_padded)
-            output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
-            
-            # Process generated response
-            batch = batch.union(output_gen_batch)
-            for b in batch:
-                response_text = self.tokenizer.decode(b.batch['responses'], skip_special_tokens=True)
+            for batch_start in range(0, len(temp_data), batch_size):
+                batch_end = min(batch_start + batch_size, len(temp_data))
+                batch_indices = list(range(batch_start, batch_end))
                 
-                print(f"Self-Judge Response: {response_text}")  # Debugging output
+                # Create subset sampler
+                batch_sampler = torch.utils.data.SubsetRandomSampler(batch_indices)
+                dataloader = torch.utils.data.DataLoader(
+                    dataset=temp_data,
+                    batch_size=batch_end - batch_start,
+                    drop_last=False,
+                    shuffle=False,
+                    collate_fn=collate_fn,
+                    sampler=batch_sampler,
+                )
                 
-                # Extract score from response
-                score_match = re.search(r'<score>(\d+)</score>', response_text, re.IGNORECASE)
-                if score_match:
-                    score = int(score_match.group(1))
-                    # Convert from 1-10 scale to 0-1 scale
-                    score = (score - 1) / 9.0  # Maps 1->0, 10->1
-                    return min(1.0, max(0.0, score))
-                else:
-                    # Fallback: try to extract any number between 1-10
-                    fallback_match = re.search(r'(\d+)', response_text)
-                    if fallback_match:
-                        score = int(fallback_match.group(1))
-                        if 1 <= score <= 10:
-                            score = (score - 1) / 9.0
-                            return min(1.0, max(0.0, score))
-                    return 0.5  # Default neutral score
+                # Generate responses for this batch
+                data = next(iter(dataloader))
+                batch = DataProto.from_single_dict(data)
+                gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+                gen_batch.meta_info = {
+                    'eos_token_id': self.tokenizer.eos_token_id,
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'recompute_log_prob': False,
+                    'do_sample': True,
+                    'validate': True,
+                    'temperature': self.temperature,
+                    'max_new_tokens': self.max_tokens,
+                    'top_p': self.top_p,
+                }
+                
+                # Pad and generate
+                gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, rollout_actor_wg.world_size)
+                output_gen_batch_padded = rollout_actor_wg.generate_sequences(gen_batch_padded)
+                output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
+                
+                # Process generated responses
+                batch = batch.union(output_gen_batch)
+                for b in batch:
+                    response_text = self.tokenizer.decode(b.batch['responses'], skip_special_tokens=True)
+                    eval_idx = b.non_tensor_batch['eval_idx']
+                    
+                    print(f"Self-Judge Response {eval_idx}: {response_text}")  # Debugging output
+                    
+                    # Extract score from response
+                    score_match = re.search(r'<score>(\d+)</score>', response_text, re.IGNORECASE)
+                    if score_match:
+                        score = int(score_match.group(1))
+                        # Convert from 1-10 scale to 0-1 scale
+                        score = (score - 1) / 9.0  # Maps 1->0, 10->1
+                        all_scores[eval_idx] = min(1.0, max(0.0, score))
+                    else:
+                        # Fallback: try to extract any number between 1-10
+                        fallback_match = re.search(r'(\d+)', response_text)
+                        if fallback_match:
+                            score = int(fallback_match.group(1))
+                            if 1 <= score <= 10:
+                                score = (score - 1) / 9.0
+                                all_scores[eval_idx] = min(1.0, max(0.0, score))
+            
+            return all_scores
                     
         except Exception as e:
-            print(f"Error in self-judge response generation: {e}")
-            return 0.5
+            print(f"Error in batch self-judge response generation: {e}")
+            return [0.5] * len(prompts)
+
+    def _generate_self_judge_response(self, prompt: str, rollout_actor_wg) -> float:
+        """Single prompt self-evaluation (fallback method)."""
+        results = self._generate_self_judge_responses_batch([prompt], rollout_actor_wg, batch_size=1)
+        return results[0] if results else 0.5
 
     def _get_evaluation_score(self, prompt: str, rollout_actor_wg=None) -> float:
         """Get evaluation score using either external LLM or self-judge."""
@@ -1092,6 +1114,14 @@ class GeneralIORewardManager:
             return self._generate_self_judge_response(prompt, rollout_actor_wg)
         else:
             return self._generate_llm_response(prompt)
+    
+    def _get_evaluation_scores_batch(self, prompts: List[str], rollout_actor_wg=None, batch_size: int = 8) -> List[float]:
+        """Get evaluation scores in batch for efficiency."""
+        if self.use_self_judge:
+            return self._generate_self_judge_responses_batch(prompts, rollout_actor_wg, batch_size)
+        else:
+            # For external LLM, we still call individually (could be optimized if API supports batch)
+            return [self._generate_llm_response(prompt) for prompt in prompts]
 
     def _generate_prompt_for_gen(self, data_dict: Dict) -> str:
         """Generate the LLM as judge prompt for evaluating the question genration quality."""
@@ -1277,11 +1307,14 @@ Then provide a score from 1 to 10 between <score> and </score> where:
             for response in batched_responses:
                 responses_by_uid[response['uid']].append(response)
             
-            # Calculate average scores for each question
+            # Prepare all evaluation prompts for batch processing
+            all_eval_prompts = []
+            uid_to_eval_indices = {}  # Track which prompts belong to which UID
+            
             for data_dict in data_dicts:
                 uid = data_dict['uid']
                 if uid in responses_by_uid:
-                    scores = []
+                    start_idx = len(all_eval_prompts)
                     for response_data in responses_by_uid[uid]:
                         # Create evaluation prompt
                         eval_prompt = f"""Please evaluate the following solution to a question/problem.
@@ -1313,9 +1346,23 @@ Then provide a score from 1 to 10 between <score> and </score> where:
 
 <score>X</score> (where X is an integer from 1 to 10)"""
                         
-                        score = self._get_evaluation_score(eval_prompt, rollout_actor_wg)
-                        scores.append(score)
+                        all_eval_prompts.append(eval_prompt)
                     
+                    end_idx = len(all_eval_prompts)
+                    uid_to_eval_indices[uid] = (start_idx, end_idx)
+            
+            # Evaluate all prompts in batch
+            if all_eval_prompts:
+                all_eval_scores = self._get_evaluation_scores_batch(all_eval_prompts, rollout_actor_wg, self.self_judge_batch_size)
+            else:
+                all_eval_scores = []
+            
+            # Calculate average scores for each question
+            for data_dict in data_dicts:
+                uid = data_dict['uid']
+                if uid in uid_to_eval_indices:
+                    start_idx, end_idx = uid_to_eval_indices[uid]
+                    scores = all_eval_scores[start_idx:end_idx]
                     avg_score = np.mean(scores) if scores else 0.5
                     solver_avg_scores.append(avg_score)
                 else:
@@ -1470,11 +1517,17 @@ Then provide a score from 1 to 10 between <score> and </score> where:
             solver_avg_scores = self._get_solver_scores_from_actor(data_dicts, rollout_actor_wg, n_samples)
             
             # Step 2: Evaluate each generation with LLM judge and combine with difficulty score
+            # Generate all prompts first for batch processing
+            gen_prompts = [self._generate_prompt_for_gen(data_dict) for data_dict in data_dicts]
+            
+            # Get LLM judge scores in batch for efficiency
+            external_llm_scores = self._get_evaluation_scores_batch(gen_prompts, rollout_actor_wg, self.self_judge_batch_size)
+            
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
                 
-                # Get LLM judge score for the actual generation
-                external_llm_score = self._get_evaluation_score(self._generate_prompt_for_gen(data_dict), rollout_actor_wg)
+                # Get LLM judge score for the actual generation (from batch result)
+                external_llm_score = external_llm_scores[i]
                 
                 # Compute combined score: LLM judge + difficulty (1 - solver average)
                 difficulty_score = 1 - solver_avg_scores[i]
@@ -1516,11 +1569,17 @@ Then provide a score from 1 to 10 between <score> and </score> where:
             PrettyPrinter.section_header("Computing Prediction Rewards for GeneralIO Tasks")
             
             # For prediction tasks, use LLM judge score directly
+            # Generate all prompts first for batch processing
+            pred_prompts = [self._generate_prompt_for_pred(data_dict) for data_dict in data_dicts]
+            
+            # Get LLM judge scores in batch for efficiency (no rollout_actor_wg needed for pred tasks)
+            llm_scores = self._get_evaluation_scores_batch(pred_prompts, rollout_actor_wg, self.self_judge_batch_size)
+            
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
                 
-                # Get LLM judge score directly (no rollout_actor_wg needed for pred tasks)
-                llm_score = self._get_evaluation_score(self._generate_prompt_for_pred(data_dict))
+                # Get LLM judge score from batch result
+                llm_score = llm_scores[i]
                 
                 if self.split == 'train':
                     if llm_score > 0.5:  # Consider scores > 0.5 as correct
