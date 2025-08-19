@@ -934,6 +934,54 @@ class GeneralIORewardManager:
             api_key="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"
         )
 
+    def extract_score_from_tags(self, text: str) -> List[float]:
+        """
+        Extract numerical scores from <score></score> tags with priority:
+        1. Integer numbers
+        2. Floating point numbers  
+        3. Fractions (e.g., 3/5, 7/10)
+        
+        Args:
+            text (str): The input text containing <score></score> tags
+            
+        Returns:
+            List[float]: List of extracted numerical values as floats
+        """
+        import re
+        from fractions import Fraction
+        
+        # Find all content within <score></score> tags (case insensitive)
+        score_tags = re.findall(r'<score>(.*?)</score>', text, re.IGNORECASE | re.DOTALL)
+        
+        extracted_scores = []
+        
+        for tag_content in score_tags:
+            tag_content = tag_content.strip()
+            score_value = None
+            
+            # Priority 1: Try to extract fraction first (most specific)
+            fraction_match = re.search(r'\b(\d+)/(\d+)\b', tag_content)
+            if fraction_match:
+                numerator = int(fraction_match.group(1))
+                denominator = int(fraction_match.group(2))
+                if denominator != 0:
+                    score_value = float(Fraction(numerator, denominator))
+            else:
+                # Priority 2: Try to extract floating point number
+                float_match = re.search(r'\b(\d+\.\d+)\b', tag_content)
+                if float_match:
+                    score_value = float(float_match.group(1))
+                else:
+                    # Priority 3: Try to extract integer
+                    integer_match = re.search(r'\b(\d+)\b', tag_content)
+                    if integer_match:
+                        score_value = float(integer_match.group(1))
+            
+            if score_value is not None:
+                extracted_scores.append(score_value)
+        
+        return extracted_scores
+
     def _generate_prompt_for_judge(self, question: str = None, answer: str = None, prompt_type: str = "answer") -> str:
         """Generate a prompt for the LLM to judge the quality of a question and response."""
         assert prompt_type in ["answer", "question", "together"], f"Invalid prompt type: {prompt_type}"
@@ -1128,16 +1176,15 @@ When you reference your own scores, you do not use the <score> and </score> tags
 
                 # Collect raw judge outputs
                 uid2_a_scores = defaultdict(list)
-                score_pattern = re.compile(r'<score>\s*(\d+)\s*</score>', re.IGNORECASE)
 
                 for jb in judge_batch:
                     uid = jb.non_tensor_batch['uid']
                     text = self.tokenizer.decode(jb.batch['responses'], skip_special_tokens=True)
-                    scores = score_pattern.findall(text)
+                    scores = self.extract_score_from_tags(text)
                     print("Actor evaluation response:", text)
                     try:
-                        assert len(scores) == 1, f"Expected one score in the response, got: {text}"
-                        a = (int(scores[0]) - 1) / 9.0
+                        # assert len(scores) == 1, f"Expected one score in the response, got: {text}"
+                        a = (scores[0] - 1) / 9.0
                         uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
                     except:
                         print("Falling back to neutral scores.")
@@ -1222,16 +1269,15 @@ When you reference your own scores, you do not use the <score> and </score> tags
 
                     # Collect raw judge outputs
                     uid2_q_scores = defaultdict(list)
-                    score_pattern = re.compile(r'<score>\s*(\d+)\s*</score>', re.IGNORECASE)
 
                     for jb in judge_batch:
                         uid = jb.non_tensor_batch['uid']
                         text = self.tokenizer.decode(jb.batch['responses'], skip_special_tokens=True)
-                        scores = score_pattern.findall(text)
+                        scores = self.extract_score_from_tags(text)
                         print("Actor evaluation response:", text)
                         try:
-                            assert len(scores) == 1, f"Expected one score in the response, got: {text}"
-                            q = (int(scores[0]) - 1) / 9.0
+                            # assert len(scores) == 1, f"Expected one score in the response, got: {text}"
+                            q = (scores[0] - 1) / 9.0
                             uid2_q_scores[uid].append(min(1.0, max(0.0, q)))
                         except:
                             print("Falling back to neutral scores.")
@@ -1405,22 +1451,21 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 # Collect raw judge outputs
                 uid2_q_scores = defaultdict(list)
                 uid2_a_scores = defaultdict(list)
-                score_pattern = re.compile(r'<score>\s*(\d+)\s*</score>', re.IGNORECASE)
 
                 for jb in judge_batch:
                     uid = jb.non_tensor_batch['uid']
                     text = self.tokenizer.decode(jb.batch['responses'], skip_special_tokens=True)
-                    scores = score_pattern.findall(text)
+                    scores = self.extract_score_from_tags(text)
                     print("Actor evaluation response:", text)
                     try:
                         if problem_type.startswith("gen"):
-                            assert len(scores) == 1, f"Expected one score in the response, got: {text}"
-                            a = (int(scores[0]) - 1) / 9.0
+                            # assert len(scores) == 1, f"Expected one score in the response, got: {text}"
+                            a = (scores[0] - 1) / 9.0
                             uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
                         else:
-                            assert len(scores) == 2, f"Expected two scores in the response, got: {text}"
-                            q = (int(scores[0]) - 1) / 9.0
-                            a = (int(scores[1]) - 1) / 9.0
+                            # assert len(scores) == 2, f"Expected two scores in the response, got: {text}"
+                            q = (scores[0] - 1) / 9.0
+                            a = (scores[1] - 1) / 9.0
                             uid2_q_scores[uid].append(min(1.0, max(0.0, q)))
                             uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
                     except:
@@ -1466,10 +1511,10 @@ When you reference your own scores, you do not use the <score> and </score> tags
                             scores = self._generate_llm_response(eval_prompt)
                             try:
                                 if problem_type.startswith("gen"):
-                                    assert len(scores) == 1, f"Expected one score in the response, got: {score}"
-                                    pred_scores.append(score[0])
+                                    # assert len(scores) == 1, f"Expected one score in the response, got: {scores}"
+                                    pred_scores.append(scores[0])
                                 else:
-                                    assert len(scores) == 2, f"Expected two scores in the response, got: {score}"
+                                    # assert len(scores) == 2, f"Expected two scores in the response, got: {scores}"
                                     gen_scores.append(scores[0])
                                     pred_scores.append(scores[1])
                             except:
@@ -1493,7 +1538,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
         
         return avg_gen_scores, avg_pred_scores
      
-    def _generate_llm_response(self, prompt: str) -> float:
+    def _generate_llm_response(self, prompt: str) -> List[float]:
         """Call the external LLM for evaluation."""
         try:
             completion = self.client.chat.completions.create(
@@ -1517,34 +1562,34 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 
             print(f"LLM Response: {result}")  # Debugging output
                 
-            # Try to extract score from <score></score> tags
-            import re
-            score_match = re.findall(r'<score>(\d+)</score>', result, re.IGNORECASE)
-            if score_match:
-                if len(score_match) > 1:
-                    print("Multiple score available in LLM response, make sure this is what you want.")
-                    assert len(score_match) == 2, "Expected exactly two scores in the response."
-                score_list = []
-                for score in score_match:
-                    score = int(score)
-                    score = (score - 1) / 9.0
-                    score_list.append(min(1.0, max(0.0, score)))
-                return score_list
+            # Use the new extract_score_from_tags function
+            extracted_scores = self.extract_score_from_tags(result)
+            if extracted_scores:
+                # Convert scores to 0-1 range
+                normalized_scores = []
+                for score in extracted_scores:
+                    # Assume scores are in 1-10 range, normalize to 0-1
+                    if score >= 1 and score <= 10:
+                        normalized_score = (score - 1) / 9.0
+                        normalized_scores.append(min(1.0, max(0.0, normalized_score)))
+                    else:
+                        # If score is already normalized or in different range, keep as is
+                        normalized_scores.append(min(1.0, max(0.0, score)))
+                return normalized_scores
             else:
                 # Fallback: try to extract any number between 1-10
                 print("Falling back to match any number between 1-10.")
+                import re
                 fallback_match = re.findall(r'(\d+)', result)
                 if fallback_match:
-                    if len(fallback_match) > 1:
-                        print("Multiple score available in LLM response, make sure this is what you want.")
-                        assert len(fallback_match) == 2, "Expected exactly two scores in the response."
                     score_list = []
                     for score in fallback_match:
                         score = int(score)
                         if 1 <= score <= 10:
                             score = (score - 1) / 9.0
                             score_list.append(min(1.0, max(0.0, score)))
-                    return score_list
+                    if score_list:
+                        return score_list
                 return [0.0]
         except Exception as e:
             print(f"Error in LLM response generation: {e}")
@@ -1757,7 +1802,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
                     PrettyPrinter.status(f"Question: {data_dict.get('question', '')}", "", "info")
                     PrettyPrinter.status(f"Generation: {data_dict.get('generation', '')}", "", "info")
                     PrettyPrinter.status(f"Thought: {data_dict.get('thought', '')}", "", "info")
-                    PrettyPrinter.status(f"LLM Judge Score: {llm_score[i]:.4f}", f"Difficulty Score: {difficulty_score:.4f}", "info")
+                    PrettyPrinter.status(f"LLM Judge Score: {llm_scores[i]:.4f}", f"Difficulty Score: {difficulty_score:.4f}", "info")
                     PrettyPrinter.status(f"Combined Score: {final_score:.4f}", "", "info")
                     print("\n" + "-"*80 + "\n")
             all_scores['solver_avg_scores'] = solver_avg_scores
