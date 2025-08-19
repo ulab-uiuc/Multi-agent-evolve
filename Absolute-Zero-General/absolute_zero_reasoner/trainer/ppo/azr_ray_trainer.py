@@ -826,6 +826,133 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         print(general_pred_train_dataloader)
         assert len(general_pred_train_dataloader) >= 1
         return iter(general_pred_train_dataloader)
+
+    def _compute_batch_together(self, batch: DataProto, metrics: dict, timing_raw: dict, problem_type: str ) -> tuple[DataProto, dict]:
+        PrettyPrinter.section_header(f"Computing batch for pred and gen together")
+        # pop those keys for generation
+        gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+
+        # generate a batch
+        with _timer(f'gen/{problem_type}', timing_raw):
+            gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+
+        batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
+                                                dtype=object)
+        # repeat to align with repeated responses in rollout
+        batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+        batch = batch.union(gen_batch_output)
+
+        # balance the number of valid tokens on each dp rank
+        self._balance_batch(batch, metrics=metrics)
+
+        # compute global_valid tokens
+        batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
+
+        # recompute old_log_probs
+        with _timer(f'old_log_prob/{problem_type}', timing_raw):
+            old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
+            batch = batch.union(old_log_prob)
+
+        if self.use_reference_policy:
+            with _timer(f'ref/{problem_type}', timing_raw):
+                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                batch = batch.union(ref_log_prob)
+
+        # compute values
+        if self.use_critic:
+            with _timer(f'values/{problem_type}', timing_raw):
+                values = self.critic_wg.compute_values(batch)
+                batch = batch.union(values)
+
+        with _timer(f'adv/{problem_type}', timing_raw):
+            if self.use_rm:
+                reward_tensor = self.rm_wg.compute_rm_score(batch)
+                batch = batch.union(reward_tensor)
+            
+            general_type_counters = ray.get(self.dataset_manager.get_type_statistics.remote('general_types'))
+    
+            # For computing together, we compute two batches, one gen batch and one pred batch, these two batches will use the same questions and generate different rewards
+
+            # make sure actor_rollout_wg n > 1
+            reward_fn_kwargs = {
+                'data': batch,
+                'problem_type': "together_general",
+                'rollout_actor_wg': self.actor_rollout_wg, # need this to estimate difficulty reward
+                'n_samples': self.config.azr.reward.n_samples,
+                'general_type_counters': general_type_counters,
+            } # kwargs for gen batch
+
+            with _timer(f'reward_fn/{problem_type}', timing_raw):
+                PrettyPrinter.status("REWARD", f"Computing rewards for {problem_type}...", "info")
+                reward_tensor_gen, reward_tensor_pred, train_metrics_gen, train_metrics_pred, valid_questions = self.reward_fn(**reward_fn_kwargs)
+                PrettyPrinter.status("REWARD", f"Found {len(valid_questions) if valid_questions else 0} valid questions", "success")
+
+            # Log new programs if available
+            if valid_questions and self.config.azr.random_print_max_programs > 0:
+                PrettyPrinter.section_header(f"New {problem_type} Questions")
+                max_print = min(self.config.azr.random_print_max_programs, len(valid_questions))
+                for question in random.sample(valid_questions, max_print):
+                    PrettyPrinter.status(f"PROBLEM TYPE", problem_type, "info")
+                    PrettyPrinter.status("QUESTION", question['question'], "info")
+                    PrettyPrinter.status("THOUGHT", question['thought'], "info")
+                    PrettyPrinter.status("GENERATION", question['generation'], "info")
+                    print("\n" + "-"*80 + "\n")
+
+            ray.get(self.dataset_manager.add_general_batch.remote(valid_questions, self.global_steps)) if valid_questions else None
+
+            if self.config.azr.data_selection_strategy.max_questions is not None :
+                truncated_length, before_length = ray.get(self.dataset_manager.truncate_datasets.remote(self.config.azr.data_selection_strategy.max_questions, 'general'))
+                PrettyPrinter.status("DATA", f"Truncated {truncated_length} questions from general dataset, max questions is {self.config.azr.data_selection_strategy.max_questions}, dataset size was {before_length} before truncation", "info")
+           
+            # Create independent copies of batch for gen_batch and pred_batch
+            gen_batch = deepcopy(batch)
+            pred_batch = deepcopy(batch)
+
+            # Combine all train_metrics
+            train_metrics_gen = {f'gen/{k}': v for k, v in train_metrics_gen.items()}
+            train_metrics_pred = {f'pred/{k}': v for k, v in train_metrics_pred.items()}
+            # log the number of valid programs added to the dataset
+            if problem_type.endswith('general'):
+                dataset_key = 'general'
+            else:
+                raise ValueError(f'Invalid problem type: {problem_type}')
+            train_metrics_gen[f'gen/num_valid_questions'] = ray.get(
+                self.dataset_manager.get_recent_additions.remote(
+                    dataset_key, self.global_steps, self._past_epoch_window
+                )
+            )
+            metrics.update(train_metrics_gen)
+            metrics.update(train_metrics_pred)
+            # Assign the reward tensor to both gen_batch and pred_batch
+            gen_batch.batch['token_level_scores'] = reward_tensor_gen
+            pred_batch.batch['token_level_scores'] = reward_tensor_pred
+
+            if not self.config.actor_rollout_ref.actor.get('use_kl_loss', False):
+                gen_batch, kl_metrics = apply_kl_penalty(gen_batch,
+                                                kl_ctrl=self.kl_ctrl,
+                                                kl_penalty=self.config.algorithm.kl_penalty)
+                metrics.update(kl_metrics)
+                pred_batch, kl_metrics = apply_kl_penalty(pred_batch,
+                                                kl_ctrl=self.kl_ctrl,
+                                                kl_penalty=self.config.algorithm.kl_penalty)
+                metrics.update(kl_metrics)
+            else:
+                gen_batch.batch['token_level_rewards'] = gen_batch.batch['token_level_scores']
+                pred_batch.batch['token_level_rewards'] = pred_batch.batch['token_level_scores']
+
+            gen_batch = compute_advantage(gen_batch,
+                                    adv_estimator=self.config.algorithm.adv_estimator,
+                                    gamma=self.config.algorithm.gamma,
+                                    lam=self.config.algorithm.lam,
+                                    num_repeat=self.config.actor_rollout_ref.rollout.n)
+            pred_batch = compute_advantage(pred_batch,
+                                    adv_estimator=self.config.algorithm.adv_estimator,
+                                    gamma=self.config.algorithm.gamma,
+                                    lam=self.config.algorithm.lam,
+                                    num_repeat=self.config.actor_rollout_ref.rollout.n)
+
+        gc.collect()
+        return gen_batch, pred_batch, metrics
     
     def _compute_batch(self, batch: DataProto, metrics: dict, timing_raw: dict, problem_type: str ) -> tuple[DataProto, dict]:
         PrettyPrinter.section_header(f"Computing batch for {problem_type}")
@@ -1114,24 +1241,41 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         self._last_cleanup_step = self.global_steps
 
                     if 'general' in self.config.azr.problem_types:
-                        if not self.pretrain_pred:
-                            try:
-                                batch_dict = next(gen_general_dataloader)
-                            except StopIteration:
-                                gen_general_dataloader = self._create_train_gen_dataloader(
-                                    problem_type='general',
-                                    data_len=data_len,
-                                    dataset_key='general',
-                                )
-                                batch_dict = next(gen_general_dataloader)
-                            gen_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                            gen_batch, metrics = self._compute_batch(gen_batch, metrics, timing_raw, problem_type='gen_general')
-                            if self.config.azr.train_propose:
-                                batches[f'gen_general'] = gen_batch
-                        batch_dict = next(pred_general_dataloader)
-                        pred_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                        pred_batch, metrics = self._compute_batch(pred_batch, metrics, timing_raw, problem_type='pred_general')
-                        batches[f'pred_general'] = pred_batch
+                        if self.config.azr.infer_pred_gen_together:
+                            if not self.pretrain_pred:
+                                try:
+                                    batch_dict = next(gen_general_dataloader)
+                                except StopIteration:
+                                    gen_general_dataloader = self._create_train_gen_dataloader(
+                                        problem_type='general',
+                                        data_len=data_len,
+                                        dataset_key='general',
+                                    )
+                                    batch_dict = next(gen_general_dataloader)
+                                gen_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                                gen_batch, pred_batch, metrics = self._compute_batch_together(gen_batch, metrics, timing_raw, problem_type='together_general')
+                                if self.config.azr.train_propose:
+                                    batches[f'gen_general'] = gen_batch
+                            batches[f'pred_general'] = pred_batch
+                        else:
+                            if not self.pretrain_pred:
+                                try:
+                                    batch_dict = next(gen_general_dataloader)
+                                except StopIteration:
+                                    gen_general_dataloader = self._create_train_gen_dataloader(
+                                        problem_type='general',
+                                        data_len=data_len,
+                                        dataset_key='general',
+                                    )
+                                    batch_dict = next(gen_general_dataloader)
+                                gen_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                                gen_batch, metrics = self._compute_batch(gen_batch, metrics, timing_raw, problem_type='gen_general')
+                                if self.config.azr.train_propose:
+                                    batches[f'gen_general'] = gen_batch
+                            batch_dict = next(pred_general_dataloader)
+                            pred_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                            pred_batch, metrics = self._compute_batch(pred_batch, metrics, timing_raw, problem_type='pred_general')
+                            batches[f'pred_general'] = pred_batch
 
 
                     # concatenate batches
