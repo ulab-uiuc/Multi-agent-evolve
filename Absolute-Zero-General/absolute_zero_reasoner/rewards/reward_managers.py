@@ -1128,7 +1128,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
                         'prompt': [{'role': 'user', 'content': eval_text}],
                         'uid': data_dict['uid'],
                     })
-                    PrettyPrinter.section_header(f"Creating prompt for actor evaluation of answer: {resp['question']}\n\n{resp['response']}")
+                    PrettyPrinter.section_header(f"Creating prompt for actor evaluation of answer: {data_dict.get('question', '')}\n\n{data_dict.get('answer', '')}")
 
                 # Optionally repeat judgments (n_samples) if desired
                 eval_prompts = eval_prompts  # could multiply by another factor if multi-judging needed
