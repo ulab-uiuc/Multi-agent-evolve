@@ -1571,17 +1571,19 @@ When you reference your own scores, you do not use the <score> and </score> tags
         """For 'pred' problem type, use the LLM score as the final score."""
         return external_llm_score
 
-    def _evaluate_gen(self, data_dict: Dict, solver_avg_score: float) -> float:
+    def _evaluate_gen(self, data_dict: Dict, solver_avg_score: float, rollout_actor_wg=None) -> float:
         """Evaluate a 'gen' problem type."""
         prompt = self._generate_prompt_for_gen(data_dict)
-        external_llm_score = self._generate_llm_response(prompt)
+        external_llm_score = self._get_evaluation_score(prompt, rollout_actor_wg)
         final_score = self._compute_score_for_gen(data_dict, external_llm_score, solver_avg_score)
         return final_score
 
-    def _evaluate_pred(self, data_dict: Dict) -> float:
+    def _evaluate_pred(self, data_dict: Dict, rollout_actor_wg=None) -> float:
         """Evaluate a 'pred' problem type."""
         prompt = self._generate_prompt_for_pred(data_dict)
-        external_llm_score = self._generate_llm_response(prompt)
+        external_llm_score = self._get_evaluation_score(prompt, rollout_actor_wg)
+        final_score = self._compute_score_for_pred(external_llm_score)
+        return final_score
         final_score = self._compute_score_for_pred(external_llm_score)
         return final_score
 
@@ -1710,6 +1712,12 @@ When you reference your own scores, you do not use the <score> and </score> tags
             llm_scores, solver_avg_scores = self._get_all_scores(data_dicts, rollout_actor_wg, n_samples, problem_type)
             
             # Step 2: Evaluate each generation with LLM judge and combine with difficulty score
+            # Generate all prompts first for batch processing
+            gen_prompts = [self._generate_prompt_for_gen(data_dict) for data_dict in data_dicts]
+            
+            # Get LLM judge scores in batch for efficiency
+            external_llm_scores = self._get_evaluation_scores_batch(gen_prompts, rollout_actor_wg, self.self_judge_batch_size)
+            
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
                 
@@ -1756,6 +1764,12 @@ When you reference your own scores, you do not use the <score> and </score> tags
             _, llm_scores = self._get_all_scores(data_dicts, rollout_actor_wg, n_samples, problem_type)
 
             # For prediction tasks, use LLM judge score directly
+            # Generate all prompts first for batch processing
+            pred_prompts = [self._generate_prompt_for_pred(data_dict) for data_dict in data_dicts]
+            
+            # Get LLM judge scores in batch for efficiency (no rollout_actor_wg needed for pred tasks)
+            llm_scores = self._get_evaluation_scores_batch(pred_prompts, rollout_actor_wg, self.self_judge_batch_size)
+            
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
                 
@@ -1886,3 +1900,328 @@ When you reference your own scores, you do not use the <score> and </score> tags
             all_scores['accuracy'] = [0.5] * len(data_dicts)
 
         return reward_tensor, all_scores, valid_questions
+
+
+class BenchmarkEvaluationRewardManager:
+    """Reward manager for evaluating on standard benchmarks like MATH, GSM8K, HellaSwag, etc."""
+    
+    def __init__(
+        self,
+        tokenizer: AutoTokenizer,
+        model_name: str = "meta/llama-3.1-405b-instruct",
+        temperature: float = 0.0,
+        max_tokens: int = 500,
+        top_p: float = 0.95,
+        stream: bool = False,
+        **kwargs
+    ):
+        self.tokenizer = tokenizer
+        self.model_name = model_name
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.top_p = top_p
+        self.stream = stream
+        
+        # Initialize the external LLM client
+        self.client = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key="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"
+        )
+        
+    def _generate_llm_evaluation(self, question: str, model_answer: str, ground_truth: str, metric_type: str) -> float:
+        """Use LLM to evaluate if model answer matches ground truth."""
+        
+        if metric_type == "math_accuracy":
+            prompt = f"""Please evaluate whether the following mathematical answer is correct.
+
+Question: {question}
+
+Ground Truth Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+First, analyze both answers in the <think> tags below:
+
+<think>
+Compare the mathematical content of both answers:
+- Do they arrive at the same final numerical result?
+- Is the reasoning correct in the model's answer?
+- Are there any mathematical errors?
+- Do they represent the same solution even if expressed differently?
+
+[Write your detailed analysis here]
+</think>
+
+Then determine if the model's answer is correct:
+- TRUE means the model's answer is mathematically correct and matches the ground truth
+- FALSE means the model's answer is mathematically incorrect or doesn't match the ground truth
+
+<answer>TRUE</answer> or <answer>FALSE</answer>"""
+
+        elif metric_type == "multiple_choice_accuracy":
+            prompt = f"""Please evaluate whether the multiple choice answer is correct.
+
+Question: {question}
+
+Correct Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+First, analyze the answers in the <think> tags below:
+
+<think>
+Compare the answers:
+- Does the model select the same choice letter as the ground truth?
+(If the model did not provide a letter, count it as incorrect)
+
+[Write your detailed analysis here]
+</think>
+
+Then determine if the model's answer is correct:
+- TRUE means the model selected the exact correct choice
+- FALSE means the model selected the wrong choice
+
+<answer>TRUE</answer> or <answer>FALSE</answer>"""
+
+        elif metric_type == "truthfulness_accuracy":
+            prompt = f"""Please evaluate the truthfulness and accuracy of the answer.
+
+Question: {question}
+
+Expected Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+First, analyze the answers in the <think> tags below:
+
+<think>
+Evaluate the truthfulness:
+- Is the model's answer factually accurate?
+- Does it align with the expected truthful response?
+- Are there any misleading or false statements?
+
+[Write your detailed analysis here]
+</think>
+
+Then determine if the model's answer is truthful and accurate:
+- TRUE means the answer is truthful and accurate
+- FALSE means the answer contains false or misleading information
+
+<answer>TRUE</answer> or <answer>FALSE</answer>"""
+
+        else:
+            # General accuracy evaluation
+            prompt = f"""Please evaluate whether the answer is correct and appropriate.
+
+Question: {question}
+
+Expected Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+First, analyze the answers in the <think> tags below:
+
+<think>
+Compare the answers:
+- Does the model's answer address the question correctly?
+- Is the content accurate and appropriate?
+- How well does it match the expected response?
+
+[Write your detailed analysis here]
+</think>
+
+Then determine if the model's answer is correct:
+- TRUE means the answer is correct and appropriate
+- FALSE means the answer is incorrect or inappropriate
+
+<answer>TRUE</answer> or <answer>FALSE</answer>"""
+
+        try:
+            PrettyPrinter.code_block(f"Generated LLM Evaluation Prompt:\n{prompt}")
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
+                top_p=self.top_p,
+                max_tokens=self.max_tokens,
+                stream=self.stream
+            )
+            
+            if self.stream:
+                result = ""
+                for chunk in completion:
+                    if chunk.choices[0].delta.content is not None:
+                        result += chunk.choices[0].delta.content
+            else:
+                result = completion.choices[0].message.content.strip()
+            
+            PrettyPrinter.code_block(f"LLM Evaluation Result:\n{result}")
+            # Extract TRUE/FALSE from <answer></answer> tags
+            answer_match = re.search(r'<answer>(TRUE|FALSE)</answer>', result, re.IGNORECASE)
+            if answer_match:
+                answer = answer_match.group(1).upper()
+                return 1.0 if answer == "TRUE" else 0.0
+            else:
+                # Fallback: look for TRUE/FALSE anywhere in the response
+                if re.search(r'\bTRUE\b', result, re.IGNORECASE):
+                    return 1.0
+                elif re.search(r'\bFALSE\b', result, re.IGNORECASE):
+                    return 0.0
+                else:
+                    # If no clear TRUE/FALSE found, default to FALSE (incorrect)
+                    return 0.0
+                
+        except Exception as e:
+            print(f"Error in LLM evaluation: {e}")
+            return 0.0
+    
+    def _extract_model_answer(self, generation: str) -> str:
+        """Extract the model's answer from the generation."""
+        # Try to extract answer from common patterns
+        generation = generation.strip()
+        
+        # Look for final answer patterns
+        patterns = [
+            r"(?:the answer is|answer:|final answer:)\s*(.+?)(?:\n|$)",
+            r"(?:therefore|thus|so),?\s*(.+?)(?:\n|$)",
+            r"\$\$(.+?)\$\$",  # LaTeX math
+            r"####\s*(.+?)(?:\n|$)",  # GSM8K format
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, generation, re.IGNORECASE | re.DOTALL)
+            if match:
+                return match.group(1).strip()
+        
+        # If no specific pattern found, use the last line or last sentence
+        lines = generation.split('\n')
+        for line in reversed(lines):
+            line = line.strip()
+            if line and not line.startswith('(') and len(line) < 200:
+                return line
+        
+        # Fallback to first 100 characters
+        return generation[:100] + "..." if len(generation) > 100 else generation
+    
+    def _get_question_from_prompt(self, prompt_data: List[Dict]) -> str:
+        """Extract question from prompt data."""
+        if prompt_data and len(prompt_data) > 0:
+            return prompt_data[0].get('content', '')
+        return ''
+    
+    def __call__(
+        self,
+        data: DataProto,
+        **kwargs
+    ) -> Tuple[torch.Tensor, Dict]:
+        """
+        Evaluate model generations against benchmark ground truths.
+        
+        Returns:
+            reward_tensor: Tensor of evaluation scores
+            metrics: Dictionary of evaluation metrics
+        """
+        
+        try:
+            reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+            
+            all_scores = defaultdict(list)
+            correct_predictions = []
+            
+            PrettyPrinter.section_header("Benchmark Evaluation")
+            
+            data_length = len(data)
+            PrettyPrinter.status("Debug", f"Data length: {data_length}", "info")
+            PrettyPrinter.status("Debug", f"Data type: {type(data)}", "info")
+            
+            for i in range(data_length):
+                try:
+                    PrettyPrinter.status("Debug", f"Processing item {i}", "info")
+                    data_item = data[i]
+                    PrettyPrinter.status("Debug", f"Data item type: {type(data_item)}", "info")
+                    
+                    # Extract information
+                    PrettyPrinter.status("Debug", f"Non-tensor batch keys: {list(data_item.non_tensor_batch.keys())}", "info")
+                    prompt_data = data_item.non_tensor_batch.get('prompt', [])
+                    PrettyPrinter.status("Debug", f"Prompt data: {prompt_data}", "info")
+                    question = self._get_question_from_prompt(prompt_data)
+                    ground_truth = data_item.non_tensor_batch.get('answer', '')
+                    data_source = data_item.non_tensor_batch.get('data_source', 'unknown')
+                    extra_info = data_item.non_tensor_batch.get('extra_info', {})
+                    metric_type = extra_info.get('metric', 'general_accuracy')
+                    
+                    # Get model generation
+                    response_ids = data_item.batch['responses']
+                    generation = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+                    model_answer = self._extract_model_answer(generation)
+                    
+                    # Evaluate using LLM
+                    score = self._generate_llm_evaluation(question, model_answer, ground_truth, metric_type)
+                    
+                    # Store score in reward tensor (at the last position)
+                    valid_response_length = data_item.batch['attention_mask'][len(data_item.batch['prompts']):].sum()
+                    if valid_response_length > 0:
+                        reward_tensor[i, valid_response_length - 1] = score
+                    else:
+                        reward_tensor[i, -1] = score
+                    
+                    # Track metrics
+                    all_scores['accuracy'].append(score)
+                    all_scores[f'accuracy_{data_source}'].append(score)
+                    all_scores[f'accuracy_{metric_type}'].append(score)
+                    
+                    # Count as correct if score is 1.0 (TRUE)
+                    if score == 1.0:
+                        correct_predictions.append({
+                            'question': question,
+                            'model_answer': model_answer,
+                            'ground_truth': ground_truth,
+                            'score': score,
+                            'data_source': data_source
+                        })
+                    
+                    PrettyPrinter.status(
+                        f"Sample {i+1}", 
+                        f"Source: {data_source}, Correct: {'✓' if score == 1.0 else '✗'}", 
+                        "success" if score == 1.0 else "warning"
+                    )
+                    
+                except Exception as e:
+                    PrettyPrinter.status("Error", f"Failed to process item {i}: {str(e)}", "error")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            # Calculate overall metrics
+            overall_accuracy = np.mean(all_scores['accuracy']) if all_scores['accuracy'] else 0.0
+            
+            # Calculate per-source accuracies
+            source_accuracies = {}
+            for key in all_scores:
+                if key.startswith('accuracy_') and key != 'accuracy':
+                    source_name = key.replace('accuracy_', '')
+                    source_accuracies[f'val/benchmark_accuracy/{source_name}'] = np.mean(all_scores[key])
+            
+            metrics = {
+                'val/benchmark_accuracy/overall': overall_accuracy,
+                'val/benchmark_correct_count': len(correct_predictions),
+                'val/benchmark_total_count': len(data),
+                **source_accuracies
+            }
+            
+            PrettyPrinter.status(
+                "Evaluation Complete", 
+                f"Overall Accuracy: {overall_accuracy:.3f} ({len(correct_predictions)}/{len(data)})",
+                "success"
+            )
+            
+            return reward_tensor, metrics
+            
+        except Exception as e:
+            PrettyPrinter.status("Error", f"Benchmark evaluation failed: {str(e)}", "error")
+            import traceback
+            traceback.print_exc()
+            
+            # Return empty results on error
+            reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+            return reward_tensor, {}

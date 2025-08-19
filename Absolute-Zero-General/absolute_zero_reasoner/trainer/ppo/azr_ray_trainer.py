@@ -637,17 +637,52 @@ class DatasetManager:
 
 class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
-    def __init__(self, past_epoch_window: int = 10, *args, **kwargs):
+    def __init__(self, past_epoch_window: int = 10, benchmark_reward_fn=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        assert self.config.actor_rollout_ref.rollout.n == 1, "GeneralIO only supports n=1 for now"
+        # assert self.config.actor_rollout_ref.rollout.n == 1, "GeneralIO only supports n=1 for now"
 
         self._past_epoch_window = past_epoch_window
         self.dataset_manager = DatasetManager.remote()
         self._last_cleanup_step = 0
         self._cleanup_frequency = self.config.azr.get('executor_cleanup_frequency', 5)
+        self.benchmark_reward_fn = benchmark_reward_fn
     
     def cleanup(self):
         gc.collect()
+    
+    def _is_general_task(self) -> bool:
+        """Check if current task type is general"""
+        return getattr(self.config.azr, 'task_type', 'code') == 'general'
+
+    def _run_benchmark_evaluation(self) -> dict:
+        """Run benchmark evaluation for general tasks"""
+        if self.benchmark_reward_fn is None:
+            PrettyPrinter.status("BENCHMARK", "Benchmark reward function not available", "warn")
+            return {}
+        
+        try:
+            # Call the parent class method that's already implemented
+            metrics = super()._run_benchmark_evaluation()
+            PrettyPrinter.status("BENCHMARK", f"Completed benchmark evaluation with {len(metrics)} metrics", "success")
+            if metrics:
+                PrettyPrinter.status("BENCHMARK", f"Metrics keys: {list(metrics.keys())[:5]}", "info")
+            return metrics
+        except Exception as e:
+            PrettyPrinter.status("BENCHMARK", f"Benchmark evaluation failed: {str(e)}", "error")
+            import traceback
+            traceback.print_exc()
+            return {}
+    
+    def _is_general_task(self) -> bool:
+        """Check if current task type is general"""
+        return getattr(self.config.azr, 'task_type', 'code') == 'general'
+
+    # def _run_benchmark_evaluation(self) -> dict:
+    #     """Run benchmark evaluation for general tasks"""
+    #     # TODO: Implement benchmark evaluation logic
+    #     # This would use BenchmarkEvaluationRewardManager
+    #     PrettyPrinter.status("BENCHMARK", "Benchmark evaluation not yet implemented", "warn")
+    #     return {}
     
     def _create_train_gen_dataloader(
         self,
@@ -1114,17 +1149,42 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             self.tokenizer.chat_template = "{%- for message in messages -%}{{- '\n' if not loop.first -}}{{- message['content'] -}}{%- endfor -%}"
 
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
-            PrettyPrinter.section_header(f"Starting Initial Validation")
-            val_metrics = self._validate()
-            PrettyPrinter.table(
-                ["Metric", "Value"],
-                [[k, v] for k, v in val_metrics.items()],
-                title="Initial Validation Metrics"
-            )
-            logger.log(data=val_metrics, step=self.global_steps)
-            if self.config.trainer.get('val_only', False):
-                return
+        if self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
+            # PrettyPrinter.section_header(f"Starting Initial Validation")
+            # val_metrics = self._validate()
+            # PrettyPrinter.table(
+            #     ["Metric", "Value"],
+            #     [[k, v] for k, v in val_metrics.items()],
+            #     title="Initial Validation Metrics"
+            # )
+            # logger.log(data=val_metrics, step=self.global_steps)
+            # if self.config.trainer.get('val_only', False):
+            #     return
+            if self._is_general_task():
+                PrettyPrinter.status("BENCHMARK", "Running benchmark evaluation for general task", "info")
+                benchmark_metrics = self._run_benchmark_evaluation()
+                
+                # Debug: Print logger backends and metrics
+                PrettyPrinter.status("DEBUG", f"Logger backends: {list(logger.logger.keys())}", "info")
+                PrettyPrinter.status("DEBUG", f"Benchmark metrics type: {type(benchmark_metrics)}, length: {len(benchmark_metrics)}", "info")
+                if benchmark_metrics:
+                    PrettyPrinter.status("DEBUG", f"Sample metrics: {list(benchmark_metrics.keys())[:3]}", "info")
+                
+                if benchmark_metrics:
+                    logger.log(data=benchmark_metrics, step=self.global_steps)
+                    PrettyPrinter.status("WANDB", f"Logged {len(benchmark_metrics)} benchmark metrics to step {self.global_steps}", "success")
+                else:
+                    PrettyPrinter.status("WANDB", "No benchmark metrics to log", "warn")
+                
+                PrettyPrinter.table(
+                    ["Benchmark Metric", "Value"],
+                    [[k, v] for k, v in benchmark_metrics.items()],
+                    title="Benchmark Evaluation Metrics"
+                )
+                
+                if self.config.trainer.get('val_only', False):
+                    return
+            
 
         if self.loaded_datasets:
             PrettyPrinter.section_header(f"Resuming training from checkpoint")
@@ -1238,15 +1298,27 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
                     # validate
                     PrettyPrinter.section_header(f"Starting Validation")
-                    if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
-                        self.global_steps % self.config.trainer.test_freq == 0:
+                    if self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
-                            val_metrics: dict = self._validate()
-                            PrettyPrinter.table(
-                                ["Data Source", "Average Score"],
-                                [[k, v] for k, v in val_metrics.items()],
-                                title="Validation Results"
-                            )
+                            if self._is_general_task():
+                                # For general tasks, only run benchmark evaluation
+                                val_metrics: dict = self._run_benchmark_evaluation()
+                                evaluation_type = "Benchmark"
+                            else:
+                                # For other tasks, run standard validation
+                                if self.val_reward_fn is not None:
+                                    val_metrics: dict = self._validate()
+                                    evaluation_type = "Validation"
+                                else:
+                                    val_metrics = {}
+                                    evaluation_type = "Validation"
+                            
+                            if val_metrics:
+                                PrettyPrinter.table(
+                                    ["Data Source", "Average Score"],
+                                    [[k, v] for k, v in val_metrics.items()],
+                                    title=f"{evaluation_type} Results"
+                                )
                         metrics.update(val_metrics)
 
                     # print the statistics of the number of questions in the dataset
@@ -2316,15 +2388,27 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             self.tokenizer.chat_template = "{%- for message in messages -%}{{- '\n' if not loop.first -}}{{- message['content'] -}}{%- endfor -%}"
 
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
-            PrettyPrinter.section_header(f"Starting Initial Validation")
-            val_metrics = self._validate()
-            PrettyPrinter.table(
-                ["Metric", "Value"],
-                [[k, v] for k, v in val_metrics.items()],
-                title="Initial Validation Metrics"
-            )
-            logger.log(data=val_metrics, step=self.global_steps)
+        if self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
+            val_metrics = {}
+            if self._is_general_task():
+                # For general tasks, only run benchmark evaluation
+                PrettyPrinter.section_header(f"Starting Initial Benchmark Evaluation")
+                val_metrics = self._run_benchmark_evaluation()
+                evaluation_type = "Initial Benchmark"
+            else:
+                # For other tasks, run standard validation
+                if self.val_reward_fn is not None:
+                    PrettyPrinter.section_header(f"Starting Initial Validation")
+                    val_metrics = self._validate()
+                    evaluation_type = "Initial Validation"
+                
+            if val_metrics:
+                PrettyPrinter.table(
+                    ["Metric", "Value"],
+                    [[k, v] for k, v in val_metrics.items()],
+                    title=f"{evaluation_type} Metrics"
+                )
+                logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get('val_only', False):
                 return
 

@@ -1,6 +1,7 @@
 import uuid
 from copy import deepcopy
 from collections import defaultdict
+from typing import Dict, List, Optional
 
 from omegaconf import OmegaConf, open_dict
 import torch
@@ -196,6 +197,12 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
 
         self._validate_config()
         self._create_dataloader()
+        
+        # Initialize benchmark evaluation for general tasks
+        self.benchmark_reward_fn = None
+        self.benchmark_dataloader = None
+        if self._is_general_task():
+            self._setup_benchmark_evaluation()
 
     def fit(self):
         """
@@ -240,26 +247,37 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
-            pp.section_header("Initial Validation")
-            pp.status("Validation", "Running initial validation...", "info")
-            
-            val_metrics = self._validate(do_sample=self.config.eval.do_sample)
+        if self.config.trainer.get('val_before_train', True) and self.global_steps == 0:
+            val_metrics = {}
+            if self._is_general_task():
+                # For general tasks, only run benchmark evaluation
+                if self.benchmark_reward_fn is not None:
+                    pp.section_header("Initial Benchmark Evaluation")
+                    pp.status("Benchmark", "Running initial benchmark evaluation...", "info")
+                    val_metrics = self._run_benchmark_evaluation()
+            else:
+                # For other tasks, run standard validation
+                if self.val_reward_fn is not None:
+                    pp.section_header("Initial Validation")
+                    pp.status("Validation", "Running initial validation...", "info")
+                    val_metrics = self._validate(do_sample=self.config.eval.do_sample)
 
-            # Convert metrics to table format
-            metrics_table = []
-            for k, v in val_metrics.items():
-                metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
+            if val_metrics:
+                # Convert metrics to table format
+                metrics_table = []
+                for k, v in val_metrics.items():
+                    metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
 
-            pp.table(["Metric", "Value"], metrics_table, "Initial Validation Results")
-            logger.log(data=val_metrics, step=self.global_steps)
+                evaluation_type = "Initial Benchmark" if self._is_general_task() else "Initial Validation"
+                pp.table(["Metric", "Value"], metrics_table, f"{evaluation_type} Results")
+                logger.log(data=val_metrics, step=self.global_steps)
 
-            # save val metrics to model path
-            if self.config.eval.get('log_to_model_path', False):
-                import json
-                import os
-                with open(os.path.join(self.config.actor_rollout_ref.model.path, 'math_metrics.json'), 'w') as f:
-                    json.dump(val_metrics, f)
+                # save val metrics to model path
+                if self.config.eval.get('log_to_model_path', False):
+                    import json
+                    import os
+                    with open(os.path.join(self.config.actor_rollout_ref.model.path, 'math_metrics.json'), 'w') as f:
+                        json.dump(val_metrics, f)
 
             if self.config.trainer.get('val_only', False):
                 pp.status("Training", "Validation only mode, exiting", "success")
@@ -391,19 +409,33 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                         metrics.update(actor_output_metrics)
 
                     # validate
-                    if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
-                        self.global_steps % self.config.trainer.test_freq == 0:
+                    if self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
-                            pp.section_header(f"Validation (Step {self.global_steps})")
-                            pp.status("Validation", "Running validation", "info")
-                            val_metrics: dict = self._validate()
+                            if self._is_general_task():
+                                # For general tasks, only run benchmark evaluation
+                                if self.benchmark_reward_fn is not None:
+                                    pp.section_header(f"Benchmark Evaluation (Step {self.global_steps})")
+                                    pp.status("Benchmark", "Running benchmark evaluation", "info")
+                                    val_metrics: dict = self._run_benchmark_evaluation()
+                                else:
+                                    val_metrics = {}
+                            else:
+                                # For other tasks, run standard validation
+                                if self.val_reward_fn is not None:
+                                    pp.section_header(f"Validation (Step {self.global_steps})")
+                                    pp.status("Validation", "Running validation", "info")
+                                    val_metrics: dict = self._validate()
+                                else:
+                                    val_metrics = {}
 
                             # Convert metrics to table format
-                            val_metrics_table = []
-                            for k, v in val_metrics.items():
-                                val_metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
+                            if val_metrics:
+                                val_metrics_table = []
+                                for k, v in val_metrics.items():
+                                    val_metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
 
-                            pp.table(["Metric", "Value"], val_metrics_table, f"Validation Results (Step {self.global_steps})")
+                                evaluation_type = "Benchmark" if self._is_general_task() else "Validation"
+                                pp.table(["Metric", "Value"], val_metrics_table, f"{evaluation_type} Results (Step {self.global_steps})")
                         metrics.update(val_metrics)
 
                     if self.config.trainer.save_freq > 0 and \
@@ -442,16 +474,26 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                 if self.global_steps >= self.total_training_steps:
                     pp.section_header("Training Complete")
                     # perform validation after training
-                    if self.val_reward_fn is not None:
-                        pp.status("Validation", "Running final validation", "info")
-                        val_metrics = self._validate()
+                    val_metrics = {}
+                    if self._is_general_task():
+                        # For general tasks, only run benchmark evaluation
+                        if self.benchmark_reward_fn is not None:
+                            pp.status("Benchmark", "Running final benchmark evaluation", "info")
+                            val_metrics = self._run_benchmark_evaluation()
+                    else:
+                        # For other tasks, run standard validation
+                        if self.val_reward_fn is not None:
+                            pp.status("Validation", "Running final validation", "info")
+                            val_metrics = self._validate()
 
+                    if val_metrics:
                         # Convert metrics to table format
                         final_metrics_table = []
                         for k, v in val_metrics.items():
                             final_metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
 
-                        pp.table(["Metric", "Value"], final_metrics_table, "Final Validation Results")
+                        evaluation_type = "Final Benchmark" if self._is_general_task() else "Final Validation"
+                        pp.table(["Metric", "Value"], final_metrics_table, f"{evaluation_type} Results")
                         logger.log(data=val_metrics, step=self.global_steps)
 
                     if self.config.trainer.save_freq > 0 and \
@@ -551,6 +593,13 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         for k, v in all_eval_metrics.items():
             metric_dict[k] = np.mean(v)
 
+        # Run benchmark evaluation if available for general tasks - but not here since we handle it separately
+        # if self._is_general_task() and self.benchmark_reward_fn is not None:
+        #     benchmark_frequency = self.config.get('benchmark_evaluation_frequency', 100)
+        #     if self.global_steps % benchmark_frequency == 0:
+        #         benchmark_metrics = self._run_benchmark_evaluation()
+        #         metric_dict.update(benchmark_metrics)
+
         if self.config.eval.get('save_generations', False):
             import json
             with open(f'{self.config.trainer.experiment_name}_generations_{self.global_steps}.json', 'w') as f:
@@ -622,6 +671,191 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         with open_dict(self.config):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
+
+    def _is_general_task(self) -> bool:
+        """Check if the current task is a general task that should use benchmark evaluation."""
+        task_type = self.config.get('azr.task_type', '')
+        return task_type.lower() == 'general'
+    
+    def _setup_benchmark_evaluation(self):
+        """Setup benchmark evaluation for general tasks."""
+        try:
+            from absolute_zero_reasoner.rewards.reward_managers import BenchmarkEvaluationRewardManager
+            from absolute_zero_reasoner.utils.benchmark_config import BenchmarkConfig, DEFAULT_BENCHMARK_CONFIG
+            from torch.utils.data import DataLoader
+            
+            # Initialize benchmark config
+            benchmark_config = BenchmarkConfig(
+                validation_dir=self.config.get('benchmark_validation_dir', DEFAULT_BENCHMARK_CONFIG['validation_dir'])
+            )
+            
+            # Get available benchmark files
+            benchmark_names = self.config.get('benchmark_names', DEFAULT_BENCHMARK_CONFIG['default_benchmarks'])
+            benchmark_files = benchmark_config.get_benchmark_files(benchmark_names)
+            
+            if not benchmark_files:
+                print(f"Warning: No benchmark files found in {benchmark_config.validation_dir}")
+                print(f"Expected benchmark names: {benchmark_names}")
+                print("Skipping benchmark setup. To enable benchmark evaluation:")
+                print("1. Prepare benchmark validation data in parquet format")
+                print("2. Place files in the validation directory")
+                print("3. Update benchmark_validation_dir in config if needed")
+                self.benchmark_reward_fn = None
+                self.benchmark_dataloader = None
+                return
+            
+            print(f"Setting up benchmark evaluation with files: {benchmark_files}")
+            
+            # Create benchmark reward manager
+            self.benchmark_reward_fn = BenchmarkEvaluationRewardManager(
+                tokenizer=self.tokenizer,
+                model_name=self.config.get('azr.benchmark_eval_model', "meta/llama-3.1-405b-instruct"),
+                temperature=0.0,
+                max_tokens=500
+            )
+            
+            # Create benchmark dataset with per-benchmark sampling
+            max_samples_per_benchmark = self.config.get('benchmark_max_samples', DEFAULT_BENCHMARK_CONFIG['max_samples_per_benchmark'])
+            
+            print(f"Loading benchmarks with max {max_samples_per_benchmark} samples per benchmark:")
+            
+            # Collect individual benchmark datasets with proper sampling
+            benchmark_datasets = []
+            total_samples = 0
+            
+            for benchmark_file in benchmark_files:
+                try:
+                    # Load single benchmark dataset
+                    single_benchmark_dataset = RLHFDataset(
+                        parquet_files=[benchmark_file],
+                        tokenizer=self.tokenizer,
+                        prompt_key=self.config.data.prompt_key,
+                        max_prompt_length=self.config.data.get('max_validation_prompt_length', 8192),
+                        filter_prompts=True,
+                        return_raw_chat=self.config.data.get('return_raw_chat', False),
+                        truncation='error',
+                        extra_source_key=f"benchmark_{benchmark_file.split('/')[-1].split('.')[0]}"
+                    )
+                    
+                    benchmark_size = len(single_benchmark_dataset)
+                    benchmark_name = benchmark_file.split('/')[-1].split('.')[0]
+                    
+                    # Apply per-benchmark sampling limit
+                    if max_samples_per_benchmark and benchmark_size > max_samples_per_benchmark:
+                        # Create subset with limited samples
+                        indices = torch.randperm(benchmark_size)[:max_samples_per_benchmark]
+                        # Convert to python integers to avoid pandas indexing issues
+                        indices = indices.tolist()
+                        limited_dataset = torch.utils.data.Subset(single_benchmark_dataset, indices)
+                        benchmark_datasets.append(limited_dataset)
+                        actual_size = max_samples_per_benchmark
+                        print(f"  {benchmark_name}: {actual_size}/{benchmark_size} samples (limited)")
+                    else:
+                        benchmark_datasets.append(single_benchmark_dataset)
+                        actual_size = benchmark_size
+                        print(f"  {benchmark_name}: {actual_size}/{benchmark_size} samples")
+                    
+                    total_samples += actual_size
+                    
+                except Exception as e:
+                    print(f"Warning: Failed to load benchmark {benchmark_file}: {e}")
+                    continue
+            
+            # Combine all benchmark datasets
+            if benchmark_datasets:
+                benchmark_dataset = torch.utils.data.ConcatDataset(benchmark_datasets)
+                print(f"Total benchmark samples: {total_samples}")
+                
+                self.benchmark_dataloader = DataLoader(
+                    dataset=benchmark_dataset,
+                    batch_size=min(len(benchmark_dataset), 10),  # Use reasonable batch size
+                    shuffle=False,
+                    drop_last=False,
+                    collate_fn=collate_fn
+                )
+                
+                print(f"Benchmark evaluation setup complete. Dataset size: {len(benchmark_dataset)}")
+            else:
+                print("Warning: No benchmark datasets loaded successfully")
+                self.benchmark_reward_fn = None
+                self.benchmark_dataloader = None
+            
+        except Exception as e:
+            print(f"Error setting up benchmark evaluation: {e}")
+            print("Continuing without benchmark evaluation...")
+            import traceback
+            traceback.print_exc()
+            self.benchmark_reward_fn = None
+            self.benchmark_dataloader = None
+    
+    def _run_benchmark_evaluation(self) -> Dict:
+        """Run benchmark evaluation and return metrics."""
+        if self.benchmark_reward_fn is None or self.benchmark_dataloader is None:
+            from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter as pp
+            pp.status("BENCHMARK", "Benchmark evaluation not available (no data or reward function)", "warning")
+            return {}
+        
+        from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter as pp
+        
+        pp.section_header("Running Benchmark Evaluation")
+        
+        reward_tensor_lst = []
+        all_metrics = defaultdict(list)
+        
+        try:
+            batch_count = 0
+            for batch_data in self.benchmark_dataloader:
+                batch_count += 1
+                pp.status("BENCHMARK", f"Processing batch {batch_count}", "info")
+                
+                batch = DataProto.from_single_dict(batch_data)
+                
+                # Generate responses
+                gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+                gen_batch.meta_info = {
+                    'eos_token_id': self.tokenizer.eos_token_id,
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'recompute_log_prob': False,
+                    'do_sample': False,  # Use greedy decoding for evaluation
+                    'validate': True,
+                }
+                
+                # Pad and generate
+                gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, self.actor_rollout_wg.world_size)
+                output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(gen_batch_padded)
+                output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
+                
+                # Combine batch with generated outputs
+                batch = batch.union(output_gen_batch)
+                
+                # Evaluate using benchmark reward manager
+                reward_tensor, metrics = self.benchmark_reward_fn(batch)
+                
+                reward_tensor_lst.append(reward_tensor)
+                for k, v in metrics.items():
+                    all_metrics[k].append(v)
+            
+            if batch_count == 0:
+                pp.status("BENCHMARK", "No batches found in benchmark dataloader", "warning")
+                return {}
+            
+            # Aggregate metrics
+            final_metrics = {}
+            for k, v_list in all_metrics.items():
+                if v_list:
+                    if isinstance(v_list[0], (int, float)):
+                        final_metrics[k] = np.mean(v_list)
+                    else:
+                        final_metrics[k] = v_list[0]  # Take first value for non-numeric
+            
+            pp.status("Benchmark Evaluation", f"Completed successfully ({batch_count} batches processed)", "success")
+            return final_metrics
+            
+        except Exception as e:
+            pp.status("Benchmark Evaluation", f"Failed with error: {e}", "error")
+            import traceback
+            traceback.print_exc()
+            return {}
 
 
     def _save_checkpoint(self):

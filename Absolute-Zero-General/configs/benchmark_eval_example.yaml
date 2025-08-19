@@ -1,0 +1,52 @@
+# Example configuration for training with benchmark evaluation
+# Add these settings to your existing training config
+
+# Task type - set to 'general' to enable benchmark evaluation
+task_type: general
+
+# Benchmark evaluation settings
+benchmark_validation_dir: "./validation_datasets"  # Directory containing benchmark datasets
+benchmark_names:  # List of benchmarks to evaluate on
+  - "math"
+  - "gsm8k" 
+  - "hellaswag"
+  - "arc_challenge"
+
+# LLM settings for evaluation
+benchmark_eval_model: "meta/llama-3.1-405b-instruct"  # Model used for LLM-as-judge evaluation
+benchmark_evaluation_frequency: 100  # Run benchmark evaluation every N steps
+benchmark_max_samples: 500  # Limit samples per benchmark for faster evaluation
+
+# Optional: Override default benchmark directory structure
+# benchmark_config:
+#   math:
+#     file_path: "./custom_datasets/math_custom.parquet"
+#     metric_type: "math_accuracy"
+#   gsm8k:
+#     file_path: "./custom_datasets/gsm8k_custom.parquet" 
+#     metric_type: "math_accuracy"
+
+# Training settings (existing)
+trainer:
+  project_name: "reason_rl_general"
+  experiment_name: "general_benchmark_eval"
+  total_epochs: 10
+  test_freq: 50  # Regular validation frequency
+  save_freq: 100
+  
+# Data settings (existing)  
+data:
+  train_files:
+    - "path/to/train.parquet"
+  val_files:
+    - "path/to/val.parquet"
+  prompt_key: "prompt"
+  max_prompt_length: 4096
+  max_validation_prompt_length: 8192
+  train_batch_size: 32
+
+# Evaluation settings
+eval:
+  do_sample: false  # Use greedy decoding for evaluation
+  save_generations: true  # Save generated outputs
+  log_to_model_path: true

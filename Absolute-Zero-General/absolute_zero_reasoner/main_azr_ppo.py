@@ -25,7 +25,7 @@ from verl.utils import hf_tokenizer
 from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
 
 from absolute_zero_reasoner.trainer.ppo.azr_ray_trainer import CodeIORayPPOTrainer, GeneralIORayPPOTrainer
-from absolute_zero_reasoner.rewards.reward_managers import CodeIORewardManager, GeneralIORewardManager
+from absolute_zero_reasoner.rewards.reward_managers import CodeIORewardManager, GeneralIORewardManager, BenchmarkEvaluationRewardManager
 
 
 @hydra.main(config_path='configs', config_name='azr_ppo_trainer', version_base=None)
@@ -139,7 +139,7 @@ def main_task(config, compute_score=None):
     task_type = getattr(config.azr, 'task_type', 'code')  # default to 'code' for backward compatibility
     
     if task_type == 'general':
-        # Use GeneralIORewardManager for general tasks
+        # Use GeneralIORewardManager for training
         reward_fn = GeneralIORewardManager(
             tokenizer=tokenizer,
             num_examine=0,
@@ -160,20 +160,12 @@ def main_task(config, compute_score=None):
             # judge_with_actor only available for infering question and answer score together
         )
 
-        # For validation, use the same GeneralIORewardManager with test split
-        val_reward_fn = GeneralIORewardManager(
+        # For validation, use BenchmarkEvaluationRewardManager instead
+        val_reward_fn = BenchmarkEvaluationRewardManager(
             tokenizer=tokenizer,
-            num_examine=1,
-            split='test',
-            reward_fn_extraction_type=config.reward_fn.extraction_type,
-            splitter=config.reward_fn.splitter,
-            output_path=config.trainer.default_local_dir,
-            generation_reward_config=config.azr.reward.generation_reward_config,
-            eval_reward_config=getattr(config.azr.reward, 'eval_reward_config', {}),
-            model_name=getattr(config.reward_fn, 'llm_model_name', 'meta/llama-3.1-405b-instruct'),
-            max_prompt_length=config.data.max_prompt_length,
-            temperature=getattr(config.reward_fn, 'temperature', 0.7),
-            max_tokens=getattr(config.reward_fn, 'max_tokens', 1000),
+            model_name=getattr(config.azr, 'benchmark_eval_model', 'meta/llama-3.1-405b-instruct'),
+            temperature=getattr(config.reward_fn, 'temperature', 0.0),
+            max_tokens=getattr(config.reward_fn, 'max_tokens', 500),
             top_p=getattr(config.reward_fn, 'top_p', 0.95),
             stream=getattr(config.reward_fn, 'stream', True),
             boxed_retry=config.reward_fn.boxed_retry,
@@ -246,7 +238,8 @@ def main_task(config, compute_score=None):
             resource_pool_manager=resource_pool_manager,
             ray_worker_group_cls=ray_worker_group_cls,
             reward_fn=reward_fn,
-            val_reward_fn=val_reward_fn,
+            val_reward_fn=None,  # No standard validation for general tasks
+            benchmark_reward_fn=val_reward_fn,  # Use benchmark evaluation instead
         )
     else:
         trainer = CodeIORayPPOTrainer(

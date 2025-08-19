@@ -141,6 +141,12 @@ class RLHFDataset(Dataset):
         """
         Note that we also return the raw_input_ids so that it can be combined with other chat template
         """
+        # Ensure item is an integer for pandas iloc indexing
+        if hasattr(item, 'item'):  # Handle tensor indices
+            item = item.item()
+        elif not isinstance(item, int):  # Handle other non-integer types
+            item = int(item)
+            
         row_dict = self.dataframe.iloc[item].to_dict()
 
         chat = row_dict.pop(self.prompt_key)
