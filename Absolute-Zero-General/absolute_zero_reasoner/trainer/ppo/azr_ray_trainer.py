@@ -1011,6 +1011,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             elif problem_type.startswith('pred'):
                 reward_fn_kwargs = {
                     'data': batch, 
+                    'rollout_actor_wg': self.actor_rollout_wg,
                     'problem_type': problem_type, 
                 }
             with _timer(f'reward_fn/{problem_type}', timing_raw):

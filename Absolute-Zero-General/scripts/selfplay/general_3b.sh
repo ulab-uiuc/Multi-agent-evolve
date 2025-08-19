@@ -75,7 +75,6 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.train_propose=False \
     +azr.infer_pred_gen_together=False \
     azr.reward.n_samples=3 \
-    azr.self_judge=True \
     azr.reward.generation_reward_config.format_reward=false \
     azr.reward.generation_reward_config.include_references=true \
     azr.reward.generation_reward_config.generation_accuracy_convertion=inverse \

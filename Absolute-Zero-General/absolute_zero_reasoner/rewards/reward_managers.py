@@ -1135,9 +1135,13 @@ When you reference your own scores, you do not use the <score> and </score> tags
                     text = self.tokenizer.decode(jb.batch['responses'], skip_special_tokens=True)
                     scores = score_pattern.findall(text)
                     print("Actor evaluation response:", text)
-                    assert len(scores) == 1, f"Expected one score in the response, got: {text}"
-                    a = (int(score[0]) - 1) / 9.0
-                    uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
+                    try:
+                        assert len(scores) == 1, f"Expected one score in the response, got: {text}"
+                        a = (int(scores[0]) - 1) / 9.0
+                        uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
+                    except:
+                        print("Falling back to neutral scores.")
+                        pass
 
                 # Aggregate per original data_dict
                 for data_dict in data_dicts:
@@ -1225,9 +1229,13 @@ When you reference your own scores, you do not use the <score> and </score> tags
                         text = self.tokenizer.decode(jb.batch['responses'], skip_special_tokens=True)
                         scores = score_pattern.findall(text)
                         print("Actor evaluation response:", text)
-                        assert len(scores) == 1, f"Expected one score in the response, got: {text}"
-                        q = (int(scores[0]) - 1) / 9.0
-                        uid2_q_scores[uid].append(min(1.0, max(0.0, a)))
+                        try:
+                            assert len(scores) == 1, f"Expected one score in the response, got: {text}"
+                            q = (int(scores[0]) - 1) / 9.0
+                            uid2_q_scores[uid].append(min(1.0, max(0.0, q)))
+                        except:
+                            print("Falling back to neutral scores.")
+                            pass
 
                     # Aggregate per original data_dict
                     for data_dict in data_dicts:
@@ -1407,15 +1415,16 @@ When you reference your own scores, you do not use the <score> and </score> tags
                     try:
                         if problem_type.startswith("gen"):
                             assert len(scores) == 1, f"Expected one score in the response, got: {text}"
-                            a = (int(score[0]) - 1) / 9.0
-                            uid2_a_scores[uid].append(min(1.0, max(0.0, q)))
+                            a = (int(scores[0]) - 1) / 9.0
+                            uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
                         else:
                             assert len(scores) == 2, f"Expected two scores in the response, got: {text}"
-                            q = (int(score[0]) - 1) / 9.0
-                            a = (int(score[1]) - 1) / 9.0
+                            q = (int(scores[0]) - 1) / 9.0
+                            a = (int(scores[1]) - 1) / 9.0
                             uid2_q_scores[uid].append(min(1.0, max(0.0, q)))
                             uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
                     except:
+                        print("Falling back to neutral scores.")
                         pass
 
                 # Aggregate per original data_dict
@@ -1454,14 +1463,17 @@ When you reference your own scores, you do not use the <score> and </score> tags
                                 )
                                 PrettyPrinter.section_header(f"Creating prompt for actor evaluation of question and answer: {response_data['question']}\n\n{response_data['response']}")
                             
-                            score = self._generate_llm_response(eval_prompt)
-                            if problem_type.startswith("gen"):
-                                assert len(score) == 1, f"Expected one score in the response, got: {score}"
-                                pred_scores.append(score[0])
-                            else:
-                                assert len(score) == 2, f"Expected two scores in the response, got: {score}"
-                                gen_scores.append(score[0])
-                                pred_scores.append(score[1])
+                            scores = self._generate_llm_response(eval_prompt)
+                            try:
+                                if problem_type.startswith("gen"):
+                                    assert len(scores) == 1, f"Expected one score in the response, got: {score}"
+                                    pred_scores.append(score[0])
+                                else:
+                                    assert len(scores) == 2, f"Expected two scores in the response, got: {score}"
+                                    gen_scores.append(scores[0])
+                                    pred_scores.append(scores[1])
+                            except:
+                                pass
                         
                         avg_pred_score = np.mean(pred_scores) if pred_scores else 0.5
                         avg_pred_scores.append(avg_pred_score)
@@ -1711,13 +1723,6 @@ When you reference your own scores, you do not use the <score> and </score> tags
             # Step 1: Get solver average scores and llm scores(possibly) from actor model
             llm_scores, solver_avg_scores = self._get_all_scores(data_dicts, rollout_actor_wg, n_samples, problem_type)
             
-            # Step 2: Evaluate each generation with LLM judge and combine with difficulty score
-            # Generate all prompts first for batch processing
-            gen_prompts = [self._generate_prompt_for_gen(data_dict) for data_dict in data_dicts]
-            
-            # Get LLM judge scores in batch for efficiency
-            external_llm_scores = self._get_evaluation_scores_batch(gen_prompts, rollout_actor_wg, self.self_judge_batch_size)
-            
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
                 
@@ -1762,13 +1767,6 @@ When you reference your own scores, you do not use the <score> and </score> tags
             
             llm_scores = []
             _, llm_scores = self._get_all_scores(data_dicts, rollout_actor_wg, n_samples, problem_type)
-
-            # For prediction tasks, use LLM judge score directly
-            # Generate all prompts first for batch processing
-            pred_prompts = [self._generate_prompt_for_pred(data_dict) for data_dict in data_dicts]
-            
-            # Get LLM judge scores in batch for efficiency (no rollout_actor_wg needed for pred tasks)
-            llm_scores = self._get_evaluation_scores_batch(pred_prompts, rollout_actor_wg, self.self_judge_batch_size)
             
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
