@@ -909,8 +909,8 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             pred_batch = deepcopy(batch)
 
             # Combine all train_metrics
-            train_metrics_gen = {f'gen/{k}': v for k, v in train_metrics_gen.items()}
-            train_metrics_pred = {f'pred/{k}': v for k, v in train_metrics_pred.items()}
+            train_metrics_gen = {f'gen/{k}': np.mean(v) for k, v in train_metrics_gen.items()}
+            train_metrics_pred = {f'pred/{k}': np.mean(v) for k, v in train_metrics_pred.items()}
             # log the number of valid programs added to the dataset
             if problem_type.endswith('general'):
                 dataset_key = 'general'
