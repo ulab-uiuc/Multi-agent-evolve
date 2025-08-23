@@ -28,7 +28,7 @@ from verl.trainer.ppo.ray_trainer import (
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto, DataProto
 
 from absolute_zero_reasoner.utils.tracking import ReasonRLTracking
-from absolute_zero_reasoner.data_construction.constructor import get_gen_code_io_data, get_pred_code_io_data, get_gen_general_io_data, get_pred_general_io_data
+from absolute_zero_reasoner.data_construction.constructor import get_gen_code_io_data, get_pred_code_io_data, get_gen_general_io_data, get_pred_general_io_data, get_judge_general_io_data
 from absolute_zero_reasoner.trainer.ppo.reason_rl_ray_trainer import ReasonRLRayPPOTrainer
 from absolute_zero_reasoner.utils.dataset.rl_dataset import RLHFDataset
 from absolute_zero_reasoner.rewards.code_reward import parse_code_input_output, parse_inputs_message
@@ -827,6 +827,86 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         assert len(general_pred_train_dataloader) >= 1
         return iter(general_pred_train_dataloader)
 
+    def _create_train_judge_dataloader(self, problem_type: str, data_len: int) -> DataLoader:
+        if problem_type not in {'general'}:
+            raise ValueError(f"Invalid problem type for judge: {problem_type}")
+        dataset_key = "general"
+        full_dataset = ray.get(self.dataset_manager.get_dataset.remote(dataset_key))
+
+        strategy = self.config.azr.judge_data_mix_strategy
+
+        if strategy == "step":
+            entries_with_steps = ray.get(self.dataset_manager.get_dataset_with_steps.remote(dataset_key))
+            if not entries_with_steps:
+                selected_data = []
+            else:
+                entries, steps = zip(*entries_with_steps)
+                selected_indices = random.choices(
+                    range(len(entries)),
+                    weights=steps,
+                    k=min(data_len, len(entries))
+                )
+                selected_data = [entries[i] for i in selected_indices]
+        elif strategy == "uniform_total":
+            selected_data = random.sample(full_dataset, min(len(full_dataset), data_len))
+        elif strategy == "max_new":
+            total_recent = ray.get(self.dataset_manager.get_recent_additions.remote(
+                dataset_key, self.global_steps, self._past_epoch_window
+            ))
+            new_programs = full_dataset[-total_recent:] if total_recent > 0 else []
+            new_samples = random.sample(new_programs, min(len(new_programs), data_len))
+            remaining = data_len - len(new_samples)
+            selected_data = new_samples + random.sample(full_dataset, remaining)
+        elif strategy == "half_new":
+            total_recent = ray.get(self.dataset_manager.get_recent_additions.remote(
+                dataset_key, self.global_steps, self._past_epoch_window
+            ))
+            new_programs = full_dataset[-total_recent:] if total_recent > 0 else []
+            new_count = min(len(new_programs), data_len//2)
+            base_count = data_len - new_count
+            selected_data = random.sample(new_programs, new_count) + random.sample(full_dataset, base_count)
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
+        parquet_path = (self._code_dir / f'train_judge_{problem_type}.parquet').as_posix()
+
+        get_judge_general_io_data(
+            io_data=selected_data,
+            target_data_len=data_len,
+            content_max_length=self.config.azr.data_selection_strategy.content_max_length,
+            output_path=parquet_path,
+            split='train',
+            tokenizer=self.tokenizer,
+        )
+
+        judge_train_dataset = RLHFDataset(
+            parquet_files=parquet_path,
+            tokenizer=self.tokenizer,
+            prompt_key=self.config.data.prompt_key,
+            max_prompt_length=self.config.data.max_prompt_length,
+            filter_prompts=True,
+            return_raw_chat=self.config.data.get('return_raw_chat', False),
+            truncation='error',
+            extra_source_key=f"judge_{problem_type}_train"
+        )
+        with open('general_judge_train_dataset.txt', 'a') as f:
+            f.write(f"Problem type: {problem_type}, Dataset size: {len(judge_train_dataset)}\n")
+        # use sampler for better ckpt resume
+        if self.config.data.shuffle:
+            train_dataloader_generator = torch.Generator()
+            train_dataloader_generator.manual_seed(self.config.data.get('seed', 1))
+            sampler = RandomSampler(data_source=judge_train_dataset, generator=train_dataloader_generator)
+        else:
+            sampler = SequentialSampler(data_source=judge_train_dataset)
+        judge_train_dataloader = DataLoader(dataset=judge_train_dataset,
+                                           batch_size=self.config.data.train_batch_size,
+                                           drop_last=True,
+                                           collate_fn=collate_fn,
+                                           sampler=sampler)
+        print(judge_train_dataloader)
+        assert len(judge_train_dataloader) >= 1
+        return iter(judge_train_dataloader)
+
     def _compute_batch_together(self, batch: DataProto, metrics: dict, timing_raw: dict, problem_type: str ) -> tuple[DataProto, dict]:
         PrettyPrinter.section_header(f"Computing batch for pred and gen together")
         # pop those keys for generation
@@ -1014,6 +1094,13 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     'rollout_actor_wg': self.actor_rollout_wg,
                     'problem_type': problem_type, 
                 }
+            elif problem_type.startswith('judge'):
+                reward_fn_kwargs = {
+                    'data': batch,
+                    'rollout_actor_wg': self.actor_rollout_wg,
+                    'problem_type': problem_type,
+                }
+
             with _timer(f'reward_fn/{problem_type}', timing_raw):
                 PrettyPrinter.status("REWARD", f"Computing rewards for {problem_type}...", "info")
                 reward_tensor, train_metrics, valid_questions = self.reward_fn(**reward_fn_kwargs)
@@ -1226,6 +1313,13 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     problem_type='general',
                     data_len=data_len,
                 )
+                judge_general_dataloader = self._create_train_judge_dataloader(
+                    problem_type='general',
+                    data_len=data_len,
+                )
+                # judge general data only available for judging answer currently
+                # more features like judging question may be available in the future
+                # judge training is also only available now when training alone rather than together
                 num_batches = len(gen_general_dataloader._loader) if hasattr(gen_general_dataloader, "_loader") else len(gen_general_dataloader)
                 if num_batches < self.config.azr.data_selection_strategy.update_iteration:
                     PrettyPrinter.status("WARN", f"gen_general 只有 {num_batches} 批，不足 {self.config.azr.data_selection_strategy.update_iteration}；将重建/降级。", "warn")
@@ -1277,6 +1371,11 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                             pred_batch: DataProto = DataProto.from_single_dict(batch_dict)
                             pred_batch, metrics = self._compute_batch(pred_batch, metrics, timing_raw, problem_type='pred_general')
                             batches[f'pred_general'] = pred_batch
+                            batch_dict = next(judge_general_dataloader)
+                            judge_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                            judge_batch, metrics = self._compute_batch(judge_batch, metrics, timing_raw, problem_type='judge_general')
+                            if self.config.azr.train_judge:
+                                batches[f'judge_general'] = judge_batch
 
 
                     # concatenate batches

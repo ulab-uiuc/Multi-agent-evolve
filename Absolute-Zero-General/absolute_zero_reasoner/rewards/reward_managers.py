@@ -1917,6 +1917,13 @@ When you reference your own scores, you do not use the <score> and </score> tags
             all_scores_pred['accuracy'] = all_scores['llm_judge_score']  # For compatibility
 
             return reward_tensor_gen, reward_tensor_pred, all_scores_gen, all_scores_pred, valid_questions
+        elif problem_type.startswith("judge"):
+            PrettyPrinter.section_header("Computing Judge Rewards for GeneralIO Tasks")
+            for i, data_dict in enumerate(data_dicts):
+                valid_response_length = data_dict['valid_response_length']
+                reward_tensor[i, valid_response_length - 1] = 0.5
+
+            all_scores['accuracy'] = [0.5] * len(data_dicts)  # Default neutral score for judge tasks
         else:
             # For other cases or when rollout_actor_wg is None
             PrettyPrinter.section_header("Computing Default Rewards for GeneralIO Tasks")
