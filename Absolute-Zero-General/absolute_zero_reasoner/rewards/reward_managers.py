@@ -1101,6 +1101,47 @@ Please make sure that your response contains only two pairs of <score> and </sco
 When you reference your own scores, you do not use the <score> and </score> tags. You only use these tags to provide the final scores for the question and answer.
 """
         return prompt
+    
+    def rollout_with_actors(self, dataset_file: str, rollout_actor_wg) -> DataProto:
+        dataset = RLHFDataset(
+            parquet_files=dataset_file,
+            tokenizer=self.tokenizer,
+            prompt_key='prompt',
+            max_prompt_length=self.max_prompt_length,
+            filter_prompts=True,
+            return_raw_chat=False,
+            truncation='error'
+        )
+        if os.path.exists(dataset_file):
+            os.remove(dataset_file)
+
+        sampler = torch.utils.data.SequentialSampler(data_source=dataset)
+        dataloader = torch.utils.data.DataLoader(
+            dataset=dataset,
+            batch_size=len(dataset),
+            drop_last=False,
+            shuffle=False,
+            collate_fn=collate_fn,
+            sampler=sampler,
+        )
+
+        data = next(iter(dataloader))
+        batch = DataProto.from_single_dict(data)
+        gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+        gen_batch.meta_info = {
+            'eos_token_id': self.tokenizer.eos_token_id,
+            'pad_token_id': self.tokenizer.pad_token_id,
+            'recompute_log_prob': False,
+            'do_sample': True,
+            'validate': True,
+        }
+
+        gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, rollout_actor_wg.world_size)
+        out_gen_batch_padded = rollout_actor_wg.generate_sequences(gen_batch_padded)
+        out_gen_batch = unpad_dataproto(out_gen_batch_padded, pad_size=pad_size)
+        batch = batch.union(out_gen_batch)
+
+        return batch
 
     def _get_all_scores(self, data_dicts: List[Dict], rollout_actor_wg, n_samples: int, problem_type: str) -> List[float]:
         """
@@ -1136,43 +1177,10 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 temp_judge_file = f'{self.output_path}/temp_generalio_judge.parquet'
                 pd.DataFrame(eval_prompts).to_parquet(temp_judge_file)
 
-                judge_dataset = RLHFDataset(
-                    parquet_files=temp_judge_file,
-                    tokenizer=self.tokenizer,
-                    prompt_key='prompt',
-                    max_prompt_length=self.max_prompt_length,
-                    filter_prompts=True,
-                    return_raw_chat=False,
-                    truncation='error'
+                judge_batch = self.rollout_with_actors(
+                    dataset_file=temp_judge_file,
+                    rollout_actor_wg=rollout_actor_wg
                 )
-                if os.path.exists(temp_judge_file):
-                    os.remove(temp_judge_file)
-
-                judge_sampler = torch.utils.data.SequentialSampler(data_source=judge_dataset)
-                judge_loader = torch.utils.data.DataLoader(
-                    dataset=judge_dataset,
-                    batch_size=len(judge_dataset),
-                    drop_last=False,
-                    shuffle=False,
-                    collate_fn=collate_fn,
-                    sampler=judge_sampler,
-                )
-
-                judge_data = next(iter(judge_loader))
-                judge_batch = DataProto.from_single_dict(judge_data)
-                gen_judge_batch = judge_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-                gen_judge_batch.meta_info = {
-                    'eos_token_id': self.tokenizer.eos_token_id,
-                    'pad_token_id': self.tokenizer.pad_token_id,
-                    'recompute_log_prob': False,
-                    'do_sample': True,
-                    'validate': True,
-                }
-
-                gen_judge_padded, pad_size_j = pad_dataproto_to_divisor(gen_judge_batch, rollout_actor_wg.world_size)
-                out_judge_padded = rollout_actor_wg.generate_sequences(gen_judge_padded)
-                out_judge = unpad_dataproto(out_judge_padded, pad_size=pad_size_j)
-                judge_batch = judge_batch.union(out_judge)
 
                 # Collect raw judge outputs
                 uid2_a_scores = defaultdict(list)
@@ -1229,43 +1237,10 @@ When you reference your own scores, you do not use the <score> and </score> tags
                     temp_judge_file = f'{self.output_path}/temp_generalio_judge.parquet'
                     pd.DataFrame(eval_prompts).to_parquet(temp_judge_file)
 
-                    judge_dataset = RLHFDataset(
-                        parquet_files=temp_judge_file,
-                        tokenizer=self.tokenizer,
-                        prompt_key='prompt',
-                        max_prompt_length=self.max_prompt_length,
-                        filter_prompts=True,
-                        return_raw_chat=False,
-                        truncation='error'
+                    judge_batch = self.rollout_with_actors(
+                        dataset_file=temp_judge_file,
+                        rollout_actor_wg=rollout_actor_wg
                     )
-                    if os.path.exists(temp_judge_file):
-                        os.remove(temp_judge_file)
-
-                    judge_sampler = torch.utils.data.SequentialSampler(data_source=judge_dataset)
-                    judge_loader = torch.utils.data.DataLoader(
-                        dataset=judge_dataset,
-                        batch_size=len(judge_dataset),
-                        drop_last=False,
-                        shuffle=False,
-                        collate_fn=collate_fn,
-                        sampler=judge_sampler,
-                    )
-
-                    judge_data = next(iter(judge_loader))
-                    judge_batch = DataProto.from_single_dict(judge_data)
-                    gen_judge_batch = judge_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-                    gen_judge_batch.meta_info = {
-                        'eos_token_id': self.tokenizer.eos_token_id,
-                        'pad_token_id': self.tokenizer.pad_token_id,
-                        'recompute_log_prob': False,
-                        'do_sample': True,
-                        'validate': True,
-                    }
-
-                    gen_judge_padded, pad_size_j = pad_dataproto_to_divisor(gen_judge_batch, rollout_actor_wg.world_size)
-                    out_judge_padded = rollout_actor_wg.generate_sequences(gen_judge_padded)
-                    out_judge = unpad_dataproto(out_judge_padded, pad_size=pad_size_j)
-                    judge_batch = judge_batch.union(out_judge)
 
                     # Collect raw judge outputs
                     uid2_q_scores = defaultdict(list)
@@ -1329,51 +1304,11 @@ When you reference your own scores, you do not use the <score> and </score> tags
             temp_file = f'{self.output_path}/temp_generalio_sampling.parquet'
             pd.DataFrame(repeated_prompts).to_parquet(temp_file)
             
-            # Create dataset for sampling
-            temp_data = RLHFDataset(
-                parquet_files=temp_file,
-                tokenizer=self.tokenizer,
-                prompt_key='prompt',
-                max_prompt_length=self.max_prompt_length,
-                filter_prompts=True,
-                return_raw_chat=False,
-                truncation='error'
+            batch = self.rollout_with_actors(
+                dataset_file=temp_file,
+                rollout_actor_wg=rollout_actor_wg
             )
-            
-            # Clean up temp file
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-            
-            # Create data loader
-            sampler = torch.utils.data.SequentialSampler(data_source=temp_data)
-            dataloader = torch.utils.data.DataLoader(
-                dataset=temp_data,
-                batch_size=len(temp_data),
-                drop_last=False,
-                shuffle=False,
-                collate_fn=collate_fn,
-                sampler=sampler,
-            )
-            
-            # Generate responses
-            data = next(iter(dataloader))
-            batch = DataProto.from_single_dict(data)
-            gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-            gen_batch.meta_info = {
-                'eos_token_id': self.tokenizer.eos_token_id,
-                'pad_token_id': self.tokenizer.pad_token_id,
-                'recompute_log_prob': False,
-                'do_sample': True,
-                'validate': True,
-            }
-            
-            # Pad and generate
-            gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, rollout_actor_wg.world_size)
-            output_gen_batch_padded = rollout_actor_wg.generate_sequences(gen_batch_padded)
-            output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
-            
-            # Process generated responses
-            batch = batch.union(output_gen_batch)
+
             batched_responses = []
             for b in batch:
                 response_text = self.tokenizer.decode(b.batch['responses'], skip_special_tokens=True)
@@ -1410,43 +1345,10 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 temp_judge_file = f'{self.output_path}/temp_generalio_judge.parquet'
                 pd.DataFrame(eval_prompts).to_parquet(temp_judge_file)
 
-                judge_dataset = RLHFDataset(
-                    parquet_files=temp_judge_file,
-                    tokenizer=self.tokenizer,
-                    prompt_key='prompt',
-                    max_prompt_length=self.max_prompt_length,
-                    filter_prompts=True,
-                    return_raw_chat=False,
-                    truncation='error'
+                judge_batch = self.rollout_with_actors(
+                    dataset_file=temp_judge_file,
+                    rollout_actor_wg=rollout_actor_wg
                 )
-                if os.path.exists(temp_judge_file):
-                    os.remove(temp_judge_file)
-
-                judge_sampler = torch.utils.data.SequentialSampler(data_source=judge_dataset)
-                judge_loader = torch.utils.data.DataLoader(
-                    dataset=judge_dataset,
-                    batch_size=len(judge_dataset),
-                    drop_last=False,
-                    shuffle=False,
-                    collate_fn=collate_fn,
-                    sampler=judge_sampler,
-                )
-
-                judge_data = next(iter(judge_loader))
-                judge_batch = DataProto.from_single_dict(judge_data)
-                gen_judge_batch = judge_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-                gen_judge_batch.meta_info = {
-                    'eos_token_id': self.tokenizer.eos_token_id,
-                    'pad_token_id': self.tokenizer.pad_token_id,
-                    'recompute_log_prob': False,
-                    'do_sample': True,
-                    'validate': True,
-                }
-
-                gen_judge_padded, pad_size_j = pad_dataproto_to_divisor(gen_judge_batch, rollout_actor_wg.world_size)
-                out_judge_padded = rollout_actor_wg.generate_sequences(gen_judge_padded)
-                out_judge = unpad_dataproto(out_judge_padded, pad_size=pad_size_j)
-                judge_batch = judge_batch.union(out_judge)
 
                 # Collect raw judge outputs
                 uid2_q_scores = defaultdict(list)
