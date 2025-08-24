@@ -11,6 +11,8 @@ import pandas as pd
 import torch
 from transformers import AutoTokenizer
 from openai import OpenAI
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from verl import DataProto
 from verl.protocol import DataProtoItem
 from verl.utils.dataset.rl_dataset import collate_fn
@@ -1929,6 +1931,170 @@ When you reference your own scores, you do not use the <score> and </score> tags
         return reward_tensor, all_scores, valid_questions
 
 
+def evaluate_single_item(args):
+    """
+    Independent function to evaluate a single item using LLM.
+    This function can be called in parallel processes.
+    """
+    (item_data, model_name, temperature, max_tokens, top_p, stream) = args
+    
+    try:
+        # Create a new OpenAI client for this process
+        client = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key="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"
+        )
+        
+        model_answer = item_data['model_answer']
+        ground_truth = item_data['ground_truth']
+        metric_type = item_data['metric_type']
+        
+        # Generate evaluation prompt
+        if metric_type == "math_accuracy":
+            prompt = f"""Please evaluate whether the following mathematical answer is correct.
+
+Ground Truth Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+First, analyze both answers in the <think> tags below:
+
+<think>
+Compare the mathematical content of both answers:
+- Do they arrive at the same final numerical result?
+- Is the reasoning correct in the model's answer?
+- Are there any mathematical errors?
+- Do they represent the same solution even if expressed differently?
+
+[Write your detailed analysis here]
+</think>
+
+Then determine if the model's answer is correct:
+- TRUE means the model's answer is mathematically correct and matches the ground truth
+- FALSE means the model's answer is mathematically incorrect or doesn't match the ground truth
+
+<answer>TRUE</answer> or <answer>FALSE</answer>"""
+
+        elif metric_type == "multiple_choice_accuracy":
+            prompt = f"""Please evaluate whether the multiple choice answer is correct.
+
+Correct Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+First, analyze the answers in the <think> tags below:
+
+<think>
+Compare the answers:
+- Does the model select the same choice letter as the ground truth?
+(If the model did not provide a letter, count it as incorrect)
+
+[Write your detailed analysis here]
+</think>
+
+Then determine if the model's answer is correct:
+- TRUE means the model selected the exact correct choice
+- FALSE means the model selected the wrong choice
+
+<answer>TRUE</answer> or <answer>FALSE</answer>"""
+
+        elif metric_type == "truthfulness_accuracy":
+            prompt = f"""Please evaluate the truthfulness and accuracy of the answer.
+
+Expected Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+First, analyze the answers in the <think> tags below:
+
+<think>
+Evaluate the truthfulness:
+- Is the model's answer factually accurate?
+- Does it align with the expected truthful response?
+- Are there any misleading or false statements?
+
+[Write your detailed analysis here]
+</think>
+
+Then determine if the model's answer is truthful and accurate:
+- TRUE means the answer is truthful and accurate
+- FALSE means the answer contains false or misleading information
+
+<answer>TRUE</answer> or <answer>FALSE</answer>"""
+
+        else:
+            # General accuracy evaluation
+            prompt = f"""Please evaluate whether the answer is correct and appropriate.
+
+Expected Answer: {ground_truth}
+
+Model's Answer: {model_answer}
+
+First, analyze the answers in the <think> tags below:
+
+<think>
+Compare the answers:
+- Does the model's answer provide accurate content?
+- Is the content appropriate and relevant?
+- How well does it match the expected response?
+
+[Write your detailed analysis here]
+</think>
+
+Then determine if the model's answer is correct:
+- TRUE means the answer is correct and appropriate
+- FALSE means the answer is incorrect or inappropriate
+
+<answer>TRUE</answer> or <answer>FALSE</answer>"""
+
+        # Call LLM for evaluation
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            stream=stream
+        )
+        
+        if stream:
+            result = ""
+            for chunk in completion:
+                if chunk.choices[0].delta.content is not None:
+                    result += chunk.choices[0].delta.content
+        else:
+            result = completion.choices[0].message.content.strip()
+        
+        # Extract TRUE/FALSE from <answer></answer> tags
+        answer_match = re.search(r'<answer>(TRUE|FALSE)</answer>', result, re.IGNORECASE)
+        if answer_match:
+            answer = answer_match.group(1).upper()
+            score = 1.0 if answer == "TRUE" else 0.0
+        else:
+            # Fallback: look for TRUE/FALSE anywhere in the response
+            if re.search(r'\bTRUE\b', result, re.IGNORECASE):
+                score = 1.0
+            elif re.search(r'\bFALSE\b', result, re.IGNORECASE):
+                score = 0.0
+            else:
+                # If no clear TRUE/FALSE found, default to FALSE (incorrect)
+                score = 0.0
+        
+        return {
+            'index': item_data['index'],
+            'score': score,
+            'evaluation_result': result
+        }
+        
+    except Exception as e:
+        print(f"Error evaluating item {item_data.get('index', 'unknown')}: {e}")
+        return {
+            'index': item_data.get('index', -1),
+            'score': 0.0,
+            'evaluation_result': f"Error: {str(e)}"
+        }
+
+
 class BenchmarkEvaluationRewardManager:
     """Reward manager for evaluating on standard benchmarks like MATH, GSM8K, HellaSwag, etc."""
     
@@ -1940,6 +2106,7 @@ class BenchmarkEvaluationRewardManager:
         max_tokens: int = 500,
         top_p: float = 0.95,
         stream: bool = False,
+        max_workers: int = 10,  # Number of parallel processes
         **kwargs
     ):
         self.tokenizer = tokenizer
@@ -1948,6 +2115,7 @@ class BenchmarkEvaluationRewardManager:
         self.max_tokens = max_tokens
         self.top_p = top_p
         self.stream = stream
+        self.max_workers = min(max_workers, mp.cpu_count())  # Don't exceed CPU count
         
         # Initialize the external LLM client
         self.client = OpenAI(
@@ -2147,22 +2315,21 @@ Then determine if the model's answer is correct:
             all_scores = defaultdict(list)
             correct_predictions = []
             
-            PrettyPrinter.section_header("Benchmark Evaluation")
+            PrettyPrinter.section_header("Benchmark Evaluation (Multi-process)")
             
             data_length = len(data)
-            PrettyPrinter.status("Debug", f"Data length: {data_length}", "info")
-            PrettyPrinter.status("Debug", f"Data type: {type(data)}", "info")
+            PrettyPrinter.status("Info", f"Processing {data_length} items with {self.max_workers} workers", "info")
+            
+            # Prepare evaluation tasks
+            evaluation_tasks = []
+            item_info = []  # Store original item info for later processing
             
             for i in range(data_length):
                 try:
-                    PrettyPrinter.status("Debug", f"Processing item {i}", "info")
                     data_item = data[i]
-                    PrettyPrinter.status("Debug", f"Data item type: {type(data_item)}", "info")
                     
                     # Extract information
-                    PrettyPrinter.status("Debug", f"Non-tensor batch keys: {list(data_item.non_tensor_batch.keys())}", "info")
                     prompt_data = data_item.non_tensor_batch.get('prompt', [])
-                    PrettyPrinter.status("Debug", f"Prompt data: {prompt_data}", "info")
                     question = self._get_question_from_prompt(prompt_data)
                     ground_truth = data_item.non_tensor_batch.get('answer', '')
                     data_source = data_item.non_tensor_batch.get('data_source', 'unknown')
@@ -2174,42 +2341,123 @@ Then determine if the model's answer is correct:
                     generation = self.tokenizer.decode(response_ids, skip_special_tokens=True)
                     model_answer = self._extract_model_answer(generation)
                     
-                    # Evaluate using LLM
-                    score = self._generate_llm_evaluation(model_answer, ground_truth, metric_type)
-                    
-                    # Store score in reward tensor (at the last position)
+                    # Store item info for later processing
                     valid_response_length = data_item.batch['attention_mask'][len(data_item.batch['prompts']):].sum()
-                    if valid_response_length > 0:
-                        reward_tensor[i, valid_response_length - 1] = score
-                    else:
-                        reward_tensor[i, -1] = score
+                    item_info.append({
+                        'index': i,
+                        'question': question,
+                        'model_answer': model_answer,
+                        'ground_truth': ground_truth,
+                        'data_source': data_source,
+                        'metric_type': metric_type,
+                        'valid_response_length': valid_response_length
+                    })
                     
-                    # Track metrics
-                    all_scores['accuracy'].append(score)
-                    all_scores[f'accuracy_{data_source}'].append(score)
-                    all_scores[f'accuracy_{metric_type}'].append(score)
+                    # Prepare task for multiprocessing
+                    task_data = {
+                        'index': i,
+                        'model_answer': model_answer,
+                        'ground_truth': ground_truth,
+                        'metric_type': metric_type
+                    }
                     
-                    # Count as correct if score is 1.0 (TRUE)
-                    if score == 1.0:
-                        correct_predictions.append({
-                            'question': question,
-                            'model_answer': model_answer,
-                            'ground_truth': ground_truth,
-                            'score': score,
-                            'data_source': data_source
-                        })
-                    
-                    PrettyPrinter.status(
-                        f"Sample {i+1}", 
-                        f"Source: {data_source}, Correct: {'✓' if score == 1.0 else '✗'}", 
-                        "success" if score == 1.0 else "warning"
-                    )
+                    evaluation_tasks.append((
+                        task_data,
+                        self.model_name,
+                        self.temperature,
+                        self.max_tokens,
+                        self.top_p,
+                        self.stream
+                    ))
                     
                 except Exception as e:
-                    PrettyPrinter.status("Error", f"Failed to process item {i}: {str(e)}", "error")
-                    import traceback
-                    traceback.print_exc()
+                    PrettyPrinter.status("Error", f"Failed to prepare item {i}: {str(e)}", "error")
+                    # Add default task to maintain indexing
+                    task_data = {
+                        'index': i,
+                        'model_answer': '',
+                        'ground_truth': '',
+                        'metric_type': 'general_accuracy'
+                    }
+                    evaluation_tasks.append((
+                        task_data,
+                        self.model_name,
+                        self.temperature,
+                        self.max_tokens,
+                        self.top_p,
+                        self.stream
+                    ))
+                    item_info.append({
+                        'index': i,
+                        'question': '',
+                        'model_answer': '',
+                        'ground_truth': '',
+                        'data_source': 'unknown',
+                        'metric_type': 'general_accuracy',
+                        'valid_response_length': 1
+                    })
                     continue
+            
+            # Execute evaluations in parallel
+            PrettyPrinter.status("Info", f"Starting parallel evaluation with {len(evaluation_tasks)} tasks", "info")
+            
+            evaluation_results = {}
+            if self.max_workers > 1:
+                # Use multiprocessing
+                with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+                    future_to_index = {executor.submit(evaluate_single_item, task): task[0]['index'] for task in evaluation_tasks}
+                    
+                    for future in as_completed(future_to_index):
+                        try:
+                            result = future.result()
+                            evaluation_results[result['index']] = result
+                        except Exception as e:
+                            index = future_to_index[future]
+                            PrettyPrinter.status("Error", f"Evaluation failed for item {index}: {str(e)}", "error")
+                            evaluation_results[index] = {
+                                'index': index,
+                                'score': 0.0,
+                                'evaluation_result': f"Process error: {str(e)}"
+                            }
+            else:
+                # Single-threaded fallback
+                for task in evaluation_tasks:
+                    result = evaluate_single_item(task)
+                    evaluation_results[result['index']] = result
+            
+            # Process results and populate reward tensor
+            for info in item_info:
+                i = info['index']
+                result = evaluation_results.get(i, {'score': 0.0})
+                score = result['score']
+                
+                # Store score in reward tensor
+                valid_response_length = info['valid_response_length']
+                if valid_response_length > 0:
+                    reward_tensor[i, valid_response_length - 1] = score
+                else:
+                    reward_tensor[i, -1] = score
+                
+                # Track metrics
+                all_scores['accuracy'].append(score)
+                all_scores[f'accuracy_{info["data_source"]}'].append(score)
+                all_scores[f'accuracy_{info["metric_type"]}'].append(score)
+                
+                # Count as correct if score is 1.0 (TRUE)
+                if score == 1.0:
+                    correct_predictions.append({
+                        'question': info['question'],
+                        'model_answer': info['model_answer'],
+                        'ground_truth': info['ground_truth'],
+                        'score': score,
+                        'data_source': info['data_source']
+                    })
+                
+                PrettyPrinter.status(
+                    f"Sample {i+1}", 
+                    f"Source: {info['data_source']}, Correct: {'✓' if score == 1.0 else '✗'}", 
+                    "success" if score == 1.0 else "warning"
+                )
             
             # Calculate overall metrics
             overall_accuracy = np.mean(all_scores['accuracy']) if all_scores['accuracy'] else 0.0
@@ -2230,7 +2478,7 @@ Then determine if the model's answer is correct:
             
             PrettyPrinter.status(
                 "Evaluation Complete", 
-                f"Overall Accuracy: {overall_accuracy:.3f} ({len(correct_predictions)}/{len(data)})",
+                f"Overall Accuracy: {overall_accuracy:.3f} ({len(correct_predictions)}/{len(data)}) using {self.max_workers} workers",
                 "success"
             )
             
