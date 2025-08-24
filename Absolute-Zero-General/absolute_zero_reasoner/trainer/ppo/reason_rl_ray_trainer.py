@@ -613,8 +613,37 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                     # Extract question and ground truth based on data structure
                     if 'prompt' in data_item.non_tensor_batch:
                         prompt_data = data_item.non_tensor_batch['prompt']
+                        
+                        # Handle numpy array case - convert to python list
+                        if hasattr(prompt_data, 'tolist'):
+                            prompt_data = prompt_data.tolist()
+                        elif hasattr(prompt_data, 'item'):
+                            prompt_data = prompt_data.item()
+                        
                         if isinstance(prompt_data, list) and len(prompt_data) > 0:
-                            question = prompt_data[0].get('content', '')
+                            first_prompt = prompt_data[0]
+                            # Handle nested numpy array case
+                            if hasattr(first_prompt, 'tolist'):
+                                first_prompt = first_prompt.tolist()
+                            elif hasattr(first_prompt, 'item'):
+                                first_prompt = first_prompt.item()
+                            
+                            if isinstance(first_prompt, dict):
+                                question = first_prompt.get('content', '')
+                            else:
+                                question = str(first_prompt) if first_prompt else ''
+                            
+                            # Debug: Add detailed logging for prompt extraction
+                            if i < 3:  # Show debug info for first 3 items
+                                print(f"[DEBUG] _validate Item {i} prompt_data type: {type(data_item.non_tensor_batch['prompt'])}")
+                                print(f"[DEBUG] _validate Item {i} converted prompt_data type: {type(prompt_data)}")
+                                print(f"[DEBUG] _validate Item {i} prompt_data length: {len(prompt_data) if isinstance(prompt_data, list) else 'not a list'}")
+                                print(f"[DEBUG] _validate Item {i} first prompt type: {type(first_prompt)}")
+                                print(f"[DEBUG] _validate Item {i} first prompt: {first_prompt}")
+                                print(f"[DEBUG] _validate Item {i} extracted question length: {len(question)}")
+                    else:
+                        if i < 3:
+                            print(f"[DEBUG] _validate Item {i} no 'prompt' key found in non_tensor_batch")
                     
                     if 'answer' in data_item.non_tensor_batch:
                         ground_truth = data_item.non_tensor_batch['answer']
@@ -1006,8 +1035,37 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                         # Extract question and ground truth based on data structure
                         if 'prompt' in data_item.non_tensor_batch:
                             prompt_data = data_item.non_tensor_batch['prompt']
+                            
+                            # Handle numpy array case - convert to python list
+                            if hasattr(prompt_data, 'tolist'):
+                                prompt_data = prompt_data.tolist()
+                            elif hasattr(prompt_data, 'item'):
+                                prompt_data = prompt_data.item()
+                            
                             if isinstance(prompt_data, list) and len(prompt_data) > 0:
-                                question = prompt_data[0].get('content', '')
+                                first_prompt = prompt_data[0]
+                                # Handle nested numpy array case
+                                if hasattr(first_prompt, 'tolist'):
+                                    first_prompt = first_prompt.tolist()
+                                elif hasattr(first_prompt, 'item'):
+                                    first_prompt = first_prompt.item()
+                                
+                                if isinstance(first_prompt, dict):
+                                    question = first_prompt.get('content', '')
+                                else:
+                                    question = str(first_prompt) if first_prompt else ''
+                                
+                                # Debug: Add detailed logging for prompt extraction
+                                if i < 2:  # Show debug info for first 2 items
+                                    print(f"[DEBUG] Item {i} prompt_data type: {type(data_item.non_tensor_batch['prompt'])}")
+                                    print(f"[DEBUG] Item {i} converted prompt_data type: {type(prompt_data)}")
+                                    print(f"[DEBUG] Item {i} prompt_data length: {len(prompt_data) if isinstance(prompt_data, list) else 'not a list'}")
+                                    print(f"[DEBUG] Item {i} first prompt type: {type(first_prompt)}")
+                                    print(f"[DEBUG] Item {i} first prompt: {first_prompt}")
+                                    print(f"[DEBUG] Item {i} extracted question length: {len(question)}")
+                        else:
+                            if i < 2:
+                                print(f"[DEBUG] Item {i} no 'prompt' key found in non_tensor_batch")
                         
                         if 'answer' in data_item.non_tensor_batch:
                             ground_truth = data_item.non_tensor_batch['answer']
