@@ -42,31 +42,33 @@ class StepSummary:
 class BenchmarkTracker:
     """Tracks benchmark performance over time and generates improvement suggestions."""
     
-    def __init__(self, output_dir: str, config: Dict):
-        """Initialize the benchmark tracker."""
+    def __init__(self, output_dir: str = "./benchmark_tracking", config=None):
+        """Initialize benchmark tracker with persistent storage."""
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.config = config
         
-        print(f"[DEBUG] BenchmarkTracker.__init__: output_dir={output_dir}")
+        print(f"[DEBUG] BenchmarkTracker.__init__: output_dir={self.output_dir}")
+        print(f"[DEBUG] BenchmarkTracker.__init__: config type={type(config)}")
         
-        # Storage for all results
+        # Files for persistent storage
         self.history_file = self.output_dir / "benchmark_history.pkl"
         self.summaries_file = self.output_dir / "step_summaries.pkl"
         
-        print(f"[DEBUG] BenchmarkTracker.__init__: history_file={self.history_file}, summaries_file={self.summaries_file}")
-        
-        # Load existing data
-        self.benchmark_history: List[BenchmarkResult] = self._load_history()
-        self.step_summaries: List[StepSummary] = self._load_summaries()
-        
-        print(f"[DEBUG] BenchmarkTracker.__init__: Loaded {len(self.benchmark_history)} history items, {len(self.step_summaries)} summaries")
-        
-        # Cache for analysis
+        # In-memory data structures
+        self.benchmark_history: List[BenchmarkResult] = []
+        self.step_summaries: List[StepSummary] = []
         self._question_history: Dict[str, List[BenchmarkResult]] = defaultdict(list)
+        
+        # Load existing data if available
+        self.benchmark_history = self._load_history()
+        self.step_summaries = self._load_summaries()
         self._rebuild_question_cache()
         
-        print(f"[DEBUG] BenchmarkTracker.__init__: Question cache rebuilt with {len(self._question_history)} unique questions")
+        print(f"[DEBUG] BenchmarkTracker.__init__: loaded {len(self.benchmark_history)} history items, {len(self.step_summaries)} summaries")
+        print(f"[DEBUG] BenchmarkTracker.__init__: question_cache_size={len(self._question_history)}")
+        
+        # Store config for later use
+        self.config = config
     
     def _load_history(self) -> List[BenchmarkResult]:
         """Load benchmark history from disk."""
@@ -156,8 +158,20 @@ class BenchmarkTracker:
         
         # Update question cache
         for result in benchmark_results:
+            # Debug: Show question ID and existing history length
+            existing_count = len(self._question_history[result.question_id])
+            print(f"[DEBUG] Adding result for question_id={result.question_id}, existing_history_len={existing_count}, step={result.step}")
+            
             self._question_history[result.question_id].append(result)
             self._question_history[result.question_id].sort(key=lambda x: x.step)
+            
+            # Debug: Show new history length
+            new_count = len(self._question_history[result.question_id])
+            print(f"[DEBUG] After adding: question_id={result.question_id}, new_history_len={new_count}")
+            
+            # Show first few characters of question for identification
+            question_preview = result.question[:50] + "..." if len(result.question) > 50 else result.question
+            print(f"[DEBUG] Question preview: {question_preview}")
         
         # Create step summary
         self._create_step_summary(step, timestamp, benchmark_results)
@@ -253,6 +267,9 @@ class BenchmarkTracker:
     
     def find_problematic_questions(self, window_size: int = 5) -> Dict[str, List[str]]:
         """Find questions that are consistently wrong or got worse."""
+        
+        print(f"[DEBUG] find_problematic_questions called: step_summaries={len(self.step_summaries)}, question_history_size={len(self._question_history)}")
+        print(f"[DEBUG] Total benchmark_history items: {len(self.benchmark_history)}")
         
         if len(self.step_summaries) < 2:
             return {"message": "Need at least 2 validation steps for question analysis"}

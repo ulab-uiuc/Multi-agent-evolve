@@ -922,14 +922,16 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                     
                     # Apply per-benchmark sampling limit
                     if max_samples_per_benchmark and benchmark_size > max_samples_per_benchmark:
-                        # Create subset with limited samples
-                        indices = torch.randperm(benchmark_size)[:max_samples_per_benchmark]
+                        # Create subset with limited samples - Use fixed seed for reproducible question selection
+                        generator = torch.Generator()
+                        generator.manual_seed(42)  # Fixed seed ensures same questions every time
+                        indices = torch.randperm(benchmark_size, generator=generator)[:max_samples_per_benchmark]
                         # Convert to python integers to avoid pandas indexing issues
                         indices = indices.tolist()
                         limited_dataset = torch.utils.data.Subset(single_benchmark_dataset, indices)
                         benchmark_datasets.append(limited_dataset)
                         actual_size = max_samples_per_benchmark
-                        print(f"  {benchmark_name}: {actual_size}/{benchmark_size} samples (limited)")
+                        print(f"  {benchmark_name}: {actual_size}/{benchmark_size} samples (limited, fixed seed=42)")
                     else:
                         benchmark_datasets.append(single_benchmark_dataset)
                         actual_size = benchmark_size
@@ -955,6 +957,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                 )
                 
                 print(f"Benchmark evaluation setup complete. Dataset size: {len(benchmark_dataset)}")
+                print(f"[DEBUG] Fixed seed used for question selection to ensure consistency across evaluations")
             else:
                 print("Warning: No benchmark datasets loaded successfully")
                 self.benchmark_reward_fn = None
