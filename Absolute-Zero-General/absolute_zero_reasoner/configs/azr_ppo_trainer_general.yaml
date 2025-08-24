@@ -1,3 +1,9 @@
+# Benchmark tracking configuration
+track_benchmarks: true
+benchmark_tracker:
+  output_dir: "./outputs/benchmark_tracking"
+  enabled: true
+
 data:
   tokenizer: null
   train_files: data/math/train_${reward_fn.extraction_type}.parquet
@@ -142,7 +148,7 @@ critic:
 
 algorithm:
   kl_penalty: 0.002
-  adv_estimator: gae
+  adv_estimator: reinforce_plus_plus  # Updated to match script
   gamma: 1.0
   lam: 0.95
 

@@ -1,0 +1,40 @@
+# Example configuration for enabling benchmark tracking
+# Add this to your trainer config to enable validation tracking and analysis
+
+# Enable benchmark tracking
+track_benchmarks: true
+
+# Trainer configuration
+trainer:
+  output_dir: "./outputs/tracked_training"
+  experiment_name: "tracked_experiment"
+  project_name: "benchmark_tracking"
+  
+  # Validation frequency - benchmark tracking will run at each validation
+  val_freq: 100
+  val_before_train: true
+  
+# Data configuration
+data:
+  val_files: 
+    - "./data/benchmark_test_data.parquet"  # Your test benchmark data
+  
+# Example benchmark data structure expected in parquet file:
+# Each row should have:
+# - prompt: List of dicts with 'role' and 'content' keys for the question
+# - answer: Ground truth answer
+# - data_source: Name of the benchmark (e.g., "MATH", "GSM8K", "HellaSwag")
+# - extra_info: Dict with additional metadata like 'metric' type
+
+# Validation configuration  
+eval:
+  do_sample: false  # Set to false for consistent benchmark evaluation
+  save_generations: true  # Save model outputs for analysis
+
+# The benchmark tracker will:
+# 1. Record all validation results with questions, model answers, and scores
+# 2. Track accuracy trends over time for each benchmark
+# 3. Generate analysis reports comparing performance across validation steps
+# 4. Identify problematic questions (consistently wrong or regression)
+# 5. Generate improvement prompts for judge, proposer, and solver
+# 6. Save all analysis to files in the output directory
