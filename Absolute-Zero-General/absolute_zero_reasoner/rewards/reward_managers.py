@@ -1955,13 +1955,11 @@ class BenchmarkEvaluationRewardManager:
             api_key="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"
         )
         
-    def _generate_llm_evaluation(self, question: str, model_answer: str, ground_truth: str, metric_type: str) -> float:
+    def _generate_llm_evaluation(self, model_answer: str, ground_truth: str, metric_type: str) -> float:
         """Use LLM to evaluate if model answer matches ground truth."""
         
         if metric_type == "math_accuracy":
             prompt = f"""Please evaluate whether the following mathematical answer is correct.
-
-Question: {question}
 
 Ground Truth Answer: {ground_truth}
 
@@ -1988,8 +1986,6 @@ Then determine if the model's answer is correct:
         elif metric_type == "multiple_choice_accuracy":
             prompt = f"""Please evaluate whether the multiple choice answer is correct.
 
-Question: {question}
-
 Correct Answer: {ground_truth}
 
 Model's Answer: {model_answer}
@@ -2012,8 +2008,6 @@ Then determine if the model's answer is correct:
 
         elif metric_type == "truthfulness_accuracy":
             prompt = f"""Please evaluate the truthfulness and accuracy of the answer.
-
-Question: {question}
 
 Expected Answer: {ground_truth}
 
@@ -2040,8 +2034,6 @@ Then determine if the model's answer is truthful and accurate:
             # General accuracy evaluation
             prompt = f"""Please evaluate whether the answer is correct and appropriate.
 
-Question: {question}
-
 Expected Answer: {ground_truth}
 
 Model's Answer: {model_answer}
@@ -2050,8 +2042,8 @@ First, analyze the answers in the <think> tags below:
 
 <think>
 Compare the answers:
-- Does the model's answer address the question correctly?
-- Is the content accurate and appropriate?
+- Does the model's answer provide accurate content?
+- Is the content appropriate and relevant?
 - How well does it match the expected response?
 
 [Write your detailed analysis here]
@@ -2183,7 +2175,7 @@ Then determine if the model's answer is correct:
                     model_answer = self._extract_model_answer(generation)
                     
                     # Evaluate using LLM
-                    score = self._generate_llm_evaluation(question, model_answer, ground_truth, metric_type)
+                    score = self._generate_llm_evaluation(model_answer, ground_truth, metric_type)
                     
                     # Store score in reward tensor (at the last position)
                     valid_response_length = data_item.batch['attention_mask'][len(data_item.batch['prompts']):].sum()
