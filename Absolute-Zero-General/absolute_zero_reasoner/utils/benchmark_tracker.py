@@ -253,14 +253,11 @@ class BenchmarkTracker:
     
     def find_problematic_questions(self, window_size: int = 5) -> Dict[str, List[str]]:
         """Find questions that are consistently wrong or got worse."""
-        print(f"[DEBUG] find_problematic_questions: step_summaries={len(self.step_summaries)}, question_history={len(self._question_history)}")
         
         if len(self.step_summaries) < 2:
-            print(f"[DEBUG] find_problematic_questions: Not enough step summaries")
             return {"message": "Need at least 2 validation steps for question analysis"}
         
         recent_steps = sorted([s.step for s in self.step_summaries])[-window_size:]
-        print(f"[DEBUG] find_problematic_questions: recent_steps={recent_steps}")
         
         problematic_questions = {
             'always_wrong': [],  # Questions always answered incorrectly
@@ -270,6 +267,19 @@ class BenchmarkTracker:
         
         analyzed_questions = 0
         skipped_single_occurrence = 0
+        
+        # Add debugging to see what data we have
+        print(f"[DEBUG] Question cache has {len(self._question_history)} unique questions")
+        print(f"[DEBUG] Recent steps to analyze: {recent_steps}")
+        
+        # Show a sample of the question history
+        sample_count = 0
+        for question_id, history in self._question_history.items():
+            if sample_count < 3:  # Show first 3 questions
+                print(f"[DEBUG] Sample question {question_id}: {len(history)} history items")
+                for h in history:
+                    print(f"[DEBUG]   - Step {h.step}, correct: {h.is_correct}, benchmark: {h.benchmark_name}")
+                sample_count += 1
         
         for question_id, history in self._question_history.items():
             # Skip questions that only appeared once (can't determine pattern)
@@ -351,7 +361,7 @@ class BenchmarkTracker:
         
         # Overall performance summary
         current_acc = trends['current_overall_accuracy'] * 100
-        change = trends['overall_accuracy_change'] * 100
+        change = trends.get('overall_accuracy_change', 0) * 100
         
         if change > 0:
             trend_desc = f"improved by {change:.1f}%"
@@ -364,11 +374,11 @@ class BenchmarkTracker:
         prompt_parts.append(f"Current overall accuracy: {current_acc:.1f}% (has {trend_desc})\n")
         
         # Per-benchmark analysis
-        if trends['benchmark_trends']:
+        if trends.get('benchmark_trends'):
             prompt_parts.append("\n## Benchmark-Specific Trends:")
             for benchmark, trend_data in trends['benchmark_trends'].items():
                 current = trend_data['current_accuracy'] * 100
-                change = trend_data['trend'] * 100
+                change = trend_data.get('trend', 0) * 100
                 if change > 0:
                     change_desc = f"↑{change:.1f}%"
                 elif change < 0:
@@ -409,7 +419,7 @@ class BenchmarkTracker:
         # Improvement suggestions
         prompt_parts.append(f"\n## Suggested Improvements:")
         
-        if trends['overall_accuracy_change'] < -0.05:  # Significant decline
+        if trends.get('overall_accuracy_change', 0) < -0.05:  # Significant decline
             prompt_parts.append("- **URGENT**: Overall performance has declined significantly. Consider:")
             prompt_parts.append("  - Reviewing recent changes to judge, proposer, or solver prompts")
             prompt_parts.append("  - Checking if the model is overfitting to recent training data")
@@ -428,7 +438,7 @@ class BenchmarkTracker:
             prompt_parts.append("- **Judge Prompt**: Consider more robust evaluation criteria to reduce scoring variance")
         
         # Specific recommendations based on trend direction
-        if trends['overall_accuracy_change'] > 0.02:
+        if trends.get('overall_accuracy_change', 0) > 0.02:
             prompt_parts.append("- **Positive Trend**: Current approach is working well, consider reinforcing successful patterns")
         
         final_prompt = "\n".join(prompt_parts)
@@ -461,7 +471,7 @@ class BenchmarkTracker:
     def export_analysis_report(self, output_file: Optional[Path] = None) -> str:
         """Export a comprehensive analysis report."""
         if output_file is None:
-            output_file = self.save_dir / f"analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            output_file = self.output_dir / f"analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         
         report_lines = []
         report_lines.append("=" * 80)
