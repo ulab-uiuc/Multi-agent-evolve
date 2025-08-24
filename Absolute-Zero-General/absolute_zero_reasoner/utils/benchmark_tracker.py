@@ -235,11 +235,14 @@ class BenchmarkTracker:
     
     def analyze_performance_trends(self, min_steps: int = 2) -> Dict[str, Any]:
         """Analyze performance trends over time."""
+        print(f"[DEBUG] analyze_performance_trends: step_summaries={len(self.step_summaries)}")
+        
         if len(self.step_summaries) < min_steps:
             return {"message": f"Need at least {min_steps} validation steps for trend analysis"}
         
         # Sort summaries by step
         sorted_summaries = sorted(self.step_summaries, key=lambda x: x.step)
+        print(f"[DEBUG] analyze_performance_trends: sorted steps={[s.step for s in sorted_summaries]}")
         
         # Overall trend
         accuracies = [s.overall_accuracy for s in sorted_summaries]
@@ -258,6 +261,9 @@ class BenchmarkTracker:
         all_benchmarks = set()
         for summary in sorted_summaries:
             all_benchmarks.update(summary.benchmark_accuracies.keys())
+            
+        print(f"[DEBUG] analyze_performance_trends: all_benchmarks={all_benchmarks}")
+        print(f"[DEBUG] analyze_performance_trends: sample benchmark_accuracies={[s.benchmark_accuracies for s in sorted_summaries[:2]]}")
         
         for benchmark in all_benchmarks:
             benchmark_scores = []
@@ -440,6 +446,13 @@ class BenchmarkTracker:
                 else:
                     change_desc = "stable"
                 prompt_parts.append(f"- {benchmark}: {current:.1f}% ({change_desc})")
+                
+                # Show history for better context
+                if 'history' in trend_data and len(trend_data['history']) > 1:
+                    history_str = " → ".join([f"{acc:.1f}%" for acc in [h*100 for h in trend_data['history']]])
+                    prompt_parts.append(f"  History: {history_str}")
+        else:
+            print(f"[DEBUG] No benchmark trends available")
         
         # Problematic questions analysis
         problem_categories = ['always_wrong', 'got_worse', 'inconsistent']
@@ -457,11 +470,38 @@ class BenchmarkTracker:
                 count = len(problematic_questions['always_wrong'])
                 prompt_parts.append(f"- {count} questions consistently answered incorrectly")
                 print(f"[DEBUG] Added always_wrong section: {count} questions")
+                
+                # Show examples of always wrong questions
+                if count > 0:
+                    prompt_parts.append(f"\n### Examples of Always Wrong Questions:")
+                    examples = problematic_questions['always_wrong'][:3]  # Show first 3
+                    for i, question_id in enumerate(examples, 1):
+                        if question_id in self._question_history:
+                            latest = self._question_history[question_id][-1]
+                            question_preview = latest.question[:100] + "..." if len(latest.question) > 100 else latest.question
+                            prompt_parts.append(f"{i}. **{question_id}**: {question_preview}")
+                            prompt_parts.append(f"   Model Answer: {latest.model_answer[:80]}...")
+                            prompt_parts.append(f"   Correct Answer: {latest.correct_answer[:80]}...")
+                            prompt_parts.append("")
             
             if problematic_questions.get('got_worse'):
                 count = len(problematic_questions['got_worse'])
                 prompt_parts.append(f"- {count} questions that were correct before but are now wrong")
                 print(f"[DEBUG] Added got_worse section: {count} questions")
+                
+                # Show examples of got worse questions
+                if count > 0:
+                    prompt_parts.append(f"\n### Examples of Regressed Questions:")
+                    examples = problematic_questions['got_worse'][:2]  # Show first 2
+                    for i, question_id in enumerate(examples, 1):
+                        if question_id in self._question_history:
+                            history = self._question_history[question_id]
+                            latest = history[-1]
+                            question_preview = latest.question[:100] + "..." if len(latest.question) > 100 else latest.question
+                            performance = " → ".join([str(h.is_correct) for h in history])
+                            prompt_parts.append(f"{i}. **{question_id}**: {question_preview}")
+                            prompt_parts.append(f"   Performance: {performance}")
+                            prompt_parts.append("")
             
             if problematic_questions.get('inconsistent'):
                 count = len(problematic_questions['inconsistent'])
