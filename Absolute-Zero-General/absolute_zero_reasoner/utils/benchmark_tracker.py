@@ -253,10 +253,14 @@ class BenchmarkTracker:
     
     def find_problematic_questions(self, window_size: int = 5) -> Dict[str, List[str]]:
         """Find questions that are consistently wrong or got worse."""
+        print(f"[DEBUG] find_problematic_questions: step_summaries={len(self.step_summaries)}, question_history={len(self._question_history)}")
+        
         if len(self.step_summaries) < 2:
+            print(f"[DEBUG] find_problematic_questions: Not enough step summaries")
             return {"message": "Need at least 2 validation steps for question analysis"}
         
         recent_steps = sorted([s.step for s in self.step_summaries])[-window_size:]
+        print(f"[DEBUG] find_problematic_questions: recent_steps={recent_steps}")
         
         problematic_questions = {
             'always_wrong': [],  # Questions always answered incorrectly
@@ -264,25 +268,51 @@ class BenchmarkTracker:
             'inconsistent': []   # Questions with inconsistent performance
         }
         
+        analyzed_questions = 0
+        skipped_single_occurrence = 0
+        
         for question_id, history in self._question_history.items():
+            # Skip questions that only appeared once (can't determine pattern)
             if len(history) < 2:
+                skipped_single_occurrence += 1
                 continue
             
             # Filter to recent steps
             recent_history = [h for h in history if h.step in recent_steps]
+            
+            # Need at least 2 data points to analyze patterns
             if len(recent_history) < 2:
                 continue
             
+            analyzed_questions += 1
+            if analyzed_questions <= 5:  # Debug first 5 questions
+                print(f"[DEBUG] Question {question_id}: total_history_len={len(history)}, recent_history_len={len(recent_history)}")
+                print(f"[DEBUG] Recent results: {[(h.step, h.is_correct) for h in recent_history]}")
+                print(f"[DEBUG] Full history: {[(h.step, h.is_correct) for h in history]}")
+            
             # Analyze pattern
             recent_correct = [h.is_correct for h in recent_history]
+            all_correct = [h.is_correct for h in history]
             
-            # Always wrong in recent history
+            # Always wrong in recent history (and historically)
             if not any(recent_correct):
-                problematic_questions['always_wrong'].append(question_id)
+                # Also check if it was never correct in the entire history
+                if not any(all_correct):
+                    problematic_questions['always_wrong'].append(question_id)
+                    if analyzed_questions <= 5:
+                        print(f"[DEBUG] Added {question_id} to always_wrong (never correct in {len(history)} attempts)")
             
             # Got worse (was correct before, wrong now)
-            elif recent_correct[0] and not recent_correct[-1]:
+            elif len(recent_correct) >= 2 and recent_correct[0] and not recent_correct[-1]:
                 problematic_questions['got_worse'].append(question_id)
+                if analyzed_questions <= 5:
+                    print(f"[DEBUG] Added {question_id} to got_worse")
+            
+            # Alternative check for "got worse": was correct in earlier history but wrong in recent
+            elif any(all_correct[:len(all_correct)//2]) and not any(recent_correct):
+                problematic_questions['got_worse'].append(question_id)
+                if analyzed_questions <= 5:
+                    print(f"[DEBUG] Added {question_id} to got_worse (was correct earlier, now consistently wrong)")
             
             # Inconsistent (alternating correct/incorrect)
             elif len(set(recent_correct)) > 1 and len(recent_correct) > 2:
@@ -291,16 +321,31 @@ class BenchmarkTracker:
                              if recent_correct[i] != recent_correct[i-1])
                 if changes >= 2:
                     problematic_questions['inconsistent'].append(question_id)
+                    if analyzed_questions <= 5:
+                        print(f"[DEBUG] Added {question_id} to inconsistent ({changes} changes in recent history)")
+        
+        print(f"[DEBUG] find_problematic_questions results:")
+        print(f"[DEBUG] - always_wrong: {len(problematic_questions['always_wrong'])} questions")
+        print(f"[DEBUG] - got_worse: {len(problematic_questions['got_worse'])} questions") 
+        print(f"[DEBUG] - inconsistent: {len(problematic_questions['inconsistent'])} questions")
+        print(f"[DEBUG] - total analyzed questions: {analyzed_questions}")
+        print(f"[DEBUG] - skipped single occurrence questions: {skipped_single_occurrence}")
         
         return problematic_questions
     
     def generate_improvement_prompt(self) -> str:
         """Generate a prompt suggesting improvements based on performance analysis."""
+        print(f"[DEBUG] generate_improvement_prompt: step_summaries={len(self.step_summaries)}")
+        
         if len(self.step_summaries) < 2:
+            print(f"[DEBUG] generate_improvement_prompt: Not enough validation data")
             return "Not enough validation data to generate improvement suggestions."
         
         trends = self.analyze_performance_trends()
         problematic_questions = self.find_problematic_questions()
+        
+        print(f"[DEBUG] generate_improvement_prompt: trends={trends.get('overall_accuracy_change', 'N/A')}")
+        print(f"[DEBUG] generate_improvement_prompt: problematic_questions keys={list(problematic_questions.keys())}")
         
         prompt_parts = []
         
@@ -333,17 +378,33 @@ class BenchmarkTracker:
                 prompt_parts.append(f"- {benchmark}: {current:.1f}% ({change_desc})")
         
         # Problematic questions analysis
-        if any(problematic_questions.get(k, []) for k in ['always_wrong', 'got_worse', 'inconsistent']):
+        problem_categories = ['always_wrong', 'got_worse', 'inconsistent']
+        has_problems = any(problematic_questions.get(k, []) for k in problem_categories)
+        
+        print(f"[DEBUG] generate_improvement_prompt: has_problems={has_problems}")
+        for category in problem_categories:
+            count = len(problematic_questions.get(category, []))
+            print(f"[DEBUG] generate_improvement_prompt: {category}: {count} questions")
+        
+        if has_problems:
             prompt_parts.append(f"\n## Problem Areas Identified:")
             
             if problematic_questions.get('always_wrong'):
-                prompt_parts.append(f"- {len(problematic_questions['always_wrong'])} questions consistently answered incorrectly")
+                count = len(problematic_questions['always_wrong'])
+                prompt_parts.append(f"- {count} questions consistently answered incorrectly")
+                print(f"[DEBUG] Added always_wrong section: {count} questions")
             
             if problematic_questions.get('got_worse'):
-                prompt_parts.append(f"- {len(problematic_questions['got_worse'])} questions that were correct before but are now wrong")
+                count = len(problematic_questions['got_worse'])
+                prompt_parts.append(f"- {count} questions that were correct before but are now wrong")
+                print(f"[DEBUG] Added got_worse section: {count} questions")
             
             if problematic_questions.get('inconsistent'):
-                prompt_parts.append(f"- {len(problematic_questions['inconsistent'])} questions with inconsistent performance")
+                count = len(problematic_questions['inconsistent'])
+                prompt_parts.append(f"- {count} questions with inconsistent performance")
+                print(f"[DEBUG] Added inconsistent section: {count} questions")
+        else:
+            print(f"[DEBUG] No problem areas identified")
         
         # Improvement suggestions
         prompt_parts.append(f"\n## Suggested Improvements:")
@@ -370,7 +431,9 @@ class BenchmarkTracker:
         if trends['overall_accuracy_change'] > 0.02:
             prompt_parts.append("- **Positive Trend**: Current approach is working well, consider reinforcing successful patterns")
         
-        return "\n".join(prompt_parts)
+        final_prompt = "\n".join(prompt_parts)
+        print(f"[DEBUG] generate_improvement_prompt: Generated prompt length={len(final_prompt)}")
+        return final_prompt
     
     def get_question_details(self, question_ids: List[str]) -> List[Dict]:
         """Get detailed history for specific questions."""
@@ -452,8 +515,14 @@ class BenchmarkTracker:
         for i, (question, model_answer, ground_truth, score) in enumerate(
             zip(questions, model_answers, ground_truths, scores)
         ):
+            # Create a stable question_id based on question content and benchmark
+            # Use a hash of the question text to ensure same question has same ID across steps
+            import hashlib
+            question_hash = hashlib.md5(f"{benchmark_name}:{question}".encode('utf-8')).hexdigest()[:8]
+            stable_question_id = f"{benchmark_name}_{question_hash}"
+            
             result = {
-                'question_id': f"{benchmark_name}_{step}_{i}",
+                'question_id': stable_question_id,  # Use stable ID instead of step-dependent ID
                 'question': question,
                 'model_answer': model_answer,
                 'correct_answer': ground_truth,
@@ -462,7 +531,7 @@ class BenchmarkTracker:
             }
             results.append(result)
         
-        print(f"[DEBUG] BenchmarkTracker.record_validation_results: Created {len(results)} result objects")
+        print(f"[DEBUG] BenchmarkTracker.record_validation_results: Created {len(results)} result objects with stable IDs")
         
         # Record using the existing method
         self.record_benchmark_results(results, step, benchmark_name)
