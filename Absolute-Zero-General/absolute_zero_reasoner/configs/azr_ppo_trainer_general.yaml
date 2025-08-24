@@ -1,8 +1,5 @@
 # Benchmark tracking configuration
 track_benchmarks: true
-benchmark_tracker:
-  output_dir: "./outputs/benchmark_tracking"
-  enabled: true
 
 data:
   tokenizer: null
@@ -98,6 +95,7 @@ actor_rollout_ref:
     n: 1 # > 1 for grpo
 
 trainer:
+  output_dir: "./outputs/benchmark_tracking"
   save_freq: 10
   log_freq: 1
   eval_freq: 5
