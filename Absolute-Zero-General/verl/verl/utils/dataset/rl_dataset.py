@@ -166,7 +166,8 @@ class RLHFDataset(Dataset):
         """
         row_dict = self.dataframe.iloc[item].to_dict()
 
-        chat = row_dict.pop(self.prompt_key)
+        # Keep the original prompt data and get a copy for processing
+        chat = row_dict[self.prompt_key]
 
         prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
 
