@@ -184,7 +184,14 @@ class BenchmarkTracker:
     
     def _create_step_summary(self, step: int, timestamp: str, results: List[BenchmarkResult]):
         """Create summary for a specific step."""
+        print(f"[DEBUG] _create_step_summary: Creating summary for step {step}")
         if not results:
+            return
+        
+        # Check if we already have a summary for this step
+        existing_steps = [s.step for s in self.step_summaries]
+        if step in existing_steps:
+            print(f"[DEBUG] _create_step_summary: Step {step} already exists in summaries, skipping duplicate")
             return
         
         # Overall accuracy
@@ -214,6 +221,17 @@ class BenchmarkTracker:
         )
         
         self.step_summaries.append(summary)
+        print(f"[DEBUG] _create_step_summary: Added summary for step {step}, total summaries now: {len(self.step_summaries)}")
+        
+        # Check if we have duplicate steps
+        steps_count = {}
+        for s in self.step_summaries:
+            steps_count[s.step] = steps_count.get(s.step, 0) + 1
+        duplicates = {step: count for step, count in steps_count.items() if count > 1}
+        if duplicates:
+            print(f"[DEBUG] _create_step_summary: WARNING - Duplicate steps detected: {duplicates}")
+        
+        print(f"[DEBUG] _create_step_summary: All steps in summaries: {[s.step for s in self.step_summaries]}")
     
     def analyze_performance_trends(self, min_steps: int = 2) -> Dict[str, Any]:
         """Analyze performance trends over time."""
@@ -271,10 +289,21 @@ class BenchmarkTracker:
         print(f"[DEBUG] find_problematic_questions called: step_summaries={len(self.step_summaries)}, question_history_size={len(self._question_history)}")
         print(f"[DEBUG] Total benchmark_history items: {len(self.benchmark_history)}")
         
+        # Debug: Show what steps we actually have
+        all_summary_steps = [s.step for s in self.step_summaries]
+        print(f"[DEBUG] All step_summary.step values: {all_summary_steps}")
+        print(f"[DEBUG] Unique step values: {sorted(list(set(all_summary_steps)))}")
+        
         if len(self.step_summaries) < 2:
             return {"message": "Need at least 2 validation steps for question analysis"}
         
-        recent_steps = sorted([s.step for s in self.step_summaries])[-window_size:]
+        all_steps = sorted(list(set([s.step for s in self.step_summaries])))
+        recent_steps = all_steps  # Use ALL unique steps if we have duplicates
+        
+        print(f"[DEBUG] All available steps: {all_steps}")
+        print(f"[DEBUG] Window size: {window_size}")
+        print(f"[DEBUG] Recent steps to analyze: {recent_steps}")
+        print(f"[DEBUG] Type of recent_steps: {type(recent_steps)}, contents: {recent_steps}")
         
         problematic_questions = {
             'always_wrong': [],  # Questions always answered incorrectly
@@ -307,8 +336,16 @@ class BenchmarkTracker:
             # Filter to recent steps
             recent_history = [h for h in history if h.step in recent_steps]
             
+            # Debug the filtering process
+            if analyzed_questions < 3:  # Debug first 3 questions
+                steps_in_history = [h.step for h in history]
+                print(f"[DEBUG] Question {question_id}: steps_in_history={steps_in_history}, recent_steps={recent_steps}")
+                print(f"[DEBUG] Filtered recent_history: {[h.step for h in recent_history]} (length={len(recent_history)})")
+            
             # Need at least 2 data points to analyze patterns
             if len(recent_history) < 2:
+                if analyzed_questions < 3:
+                    print(f"[DEBUG] Question {question_id}: Skipped - only {len(recent_history)} recent data points")
                 continue
             
             analyzed_questions += 1
