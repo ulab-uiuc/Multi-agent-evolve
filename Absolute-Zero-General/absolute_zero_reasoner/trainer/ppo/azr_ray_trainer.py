@@ -252,22 +252,26 @@ class DatasetManager:
             'problem': [],
             'error_seed': [],
             'general': [],  # General dataset for mixed data
+            'general_pair': [],
             'input_steps': [],  # Parallel list storing step numbers
             'output_steps': [], # Parallel list storing step numbers
             'error_steps': [], # Parallel list storing step numbers
             'problem_steps': [], # Parallel list storing step numbers
             'general_steps': [], # Parallel list storing step numbers
+            'general_pair_steps': [],
             'input_steps_counter': defaultdict(int),
             'output_steps_counter': defaultdict(int),
             'error_steps_counter': defaultdict(int),
             'problem_steps_counter': defaultdict(int),
             'general_steps_counter': defaultdict(int),
+            'general_pair_steps_counter': defaultdict(int),
         }
         self.type_counters = {
             'input_types': defaultdict(create_default_dict),
             'output_types': defaultdict(create_default_dict),
             'error_types': defaultdict(create_default_dict),
             'general_types': defaultdict(create_default_dict),
+            'general_pair_types': defaultdict(create_default_dict),
         }
         self.locks = {
             'input': threading.Lock(),
@@ -276,21 +280,25 @@ class DatasetManager:
             'error': threading.Lock(),
             'problem': threading.Lock(),
             'general': threading.Lock(),
+            'general_pair': threading.Lock(),
             'error_seed': threading.Lock(),
             'input_steps': threading.Lock(),
             'output_steps': threading.Lock(),
             'error_steps': threading.Lock(),
             'problem_steps': threading.Lock(),
             'general_steps': threading.Lock(),
+            'general_pair_steps': threading.Lock(),
             'input_steps_counter': threading.Lock(),
             'output_steps_counter': threading.Lock(),
             'error_steps_counter': threading.Lock(),
             'problem_steps_counter': threading.Lock(),
             'general_steps_counter': threading.Lock(),
+            'general_pair_steps_counter': threading.Lock(),
             'input_types': threading.RLock(),
             'output_types': threading.RLock(),
             'error_types': threading.RLock(),
             'general_types': threading.RLock(),
+            'general_pair_types': threading.RLock(),
         }
 
     def update_seed(self, entries):
@@ -333,16 +341,19 @@ class DatasetManager:
             'error': deepcopy(self.datasets['error']),
             'problem': deepcopy(self.datasets['problem']),
             'general': deepcopy(self.datasets['general']),
+            'general_pair': deepcopy(self.datasets['general_pair']),
             'error_seed': deepcopy(self.datasets['error_seed']),
             'input_steps': deepcopy(self.datasets['input_steps']),
             'output_steps': deepcopy(self.datasets['output_steps']),
             'error_steps': deepcopy(self.datasets['error_steps']),
             'problem_steps': deepcopy(self.datasets['problem_steps']),
             'general_steps': deepcopy(self.datasets['general_steps']),
+            'general_pair_steps': deepcopy(self.datasets['general_pair_steps']),
             'input_steps_counter': deepcopy(self.datasets['input_steps_counter']),
             'output_steps_counter': deepcopy(self.datasets['output_steps_counter']),
             'error_steps_counter': deepcopy(self.datasets['error_steps_counter']),
             'problem_steps_counter': deepcopy(self.datasets['problem_steps_counter']),
+            'general_steps_counter': deepcopy(self.datasets['general_steps_counter']),
         }
 
     def add_input_batch(self, entries: List[Dict], global_step: int):
@@ -434,6 +445,34 @@ class DatasetManager:
             self.datasets['general_steps'].extend([global_step]*len(entries))
             self.datasets['general_steps_counter'][global_step] += len(entries)
             return len(entries)
+        
+    def add_general_pair_batch(self, entries: List[Dict], global_step: int):
+        with self.locks['general_pair'], self.locks['general_pair_steps'], self.locks['general_pair_steps_counter'], self.locks['general_pair_types']:
+            # Process type counting for general pair entries
+            for entry in entries:
+                if 'question' in entry:
+                    try:
+                        question_type = determine_type(entry['question'])
+                        self.count_element(entry['question'], question_type, 'general_pair')
+                    except:
+                        pass
+                if 'answer' in entry:
+                    try:
+                        answer_type = determine_type(entry['answer'])
+                        self.count_element(entry['answer'], answer_type, 'general_pair')
+                    except:
+                        pass
+                if 'generation' in entry:
+                    try:
+                        generation_type = determine_type(entry['generation'])
+                        self.count_element(entry['generation'], generation_type, 'general')
+                    except:
+                        pass
+
+            self.datasets['general_pair'].extend(entries)
+            self.datasets['general_pair_steps'].extend([global_step]*len(entries))
+            self.datasets['general_pair_steps_counter'][global_step] += len(entries)
+            return len(entries)
 
     def get_snippets(self) -> List[Dict]:
         # get the snippets from input and output datasets merged together
@@ -488,6 +527,10 @@ class DatasetManager:
             assert len(self.datasets['general']) == len(self.datasets['general_steps']), \
                 "General data/steps mismatch!"
             return list(zip(deepcopy(self.datasets['general']), self.datasets['general_steps']))
+        elif name == "general_pair":
+            assert len(self.datasets['general_pair']) == len(self.datasets['general_pair_steps']), \
+                "General pair data/steps mismatch!"
+            return list(zip(deepcopy(self.datasets['general_pair']), self.datasets['general_pair_steps']))
         raise ValueError(f"Invalid dataset name: {name}")
 
     def get_steps_dataset(self, name) -> List[int]:
@@ -501,6 +544,8 @@ class DatasetManager:
             return self.datasets['problem_steps']
         elif name == 'general':
             return self.datasets['general_steps']
+        elif name == 'general_pair':
+            return self.datasets['general_pair_steps']
         raise ValueError(f"Invalid dataset name: {name}")
 
     def truncate_datasets(self, max_length: int, name: str) -> Tuple[int, int]:
@@ -548,6 +593,12 @@ class DatasetManager:
                 self.datasets['general'] = self.datasets['general'][:max_length]
                 truncated_length = before_length - len(self.datasets['general'])
                 return truncated_length, before_length
+        elif name == 'general_pair':
+            with self.locks['general_pair']:
+                before_length = len(self.datasets['general_pair'])
+                self.datasets['general_pair'] = self.datasets['general_pair'][:max_length]
+                truncated_length = before_length - len(self.datasets['general_pair'])
+                return truncated_length, before_length
         else:
             raise ValueError(f"Invalid dataset name: {name}")
 
@@ -566,8 +617,8 @@ class DatasetManager:
             'input': [], 'output': [], 'seed': [], 'error': [], 'problem': [],
             'error_seed': [], 'input_steps': [], 'output_steps': [], 'error_steps': [],
             'problem_steps': [], 'input_steps_counter': defaultdict(int),
-            'general': [], 'general_steps': [], 'general_steps_counter': defaultdict(int),
-            'output_steps_counter': defaultdict(int), 'error_steps_counter': defaultdict(int),
+            'general': [], 'general_pair': [], 'general_steps': [], 'general_pair_steps': [], 'general_steps_counter': defaultdict(int),
+            'output_steps_counter': defaultdict(int), 'error_steps_counter': defaultdict(int), 'general_pair_steps_counter': defaultdict(int),
             'problem_steps_counter': defaultdict(int), 
         }
         
@@ -609,7 +660,8 @@ class DatasetManager:
             'input_types': self.get_type_statistics('input_types'),
             'output_types': self.get_type_statistics('output_types'),
             'error_types': self.get_type_statistics('error_types'),
-            'general_types': self.get_type_statistics('general_types')
+            'general_types': self.get_type_statistics('general_types'),
+            'general_pair_types': self.get_type_statistics('general_pair_types'),
         }
 
     def get_all_data_with_type_counters(self) -> Dict:
@@ -621,6 +673,7 @@ class DatasetManager:
                 'output_types': deepcopy(self.type_counters['output_types']),
                 'error_types': deepcopy(self.type_counters['error_types']),
                 'general_types': deepcopy(self.type_counters['general_types']),
+                'general_pair_types': deepcopy(self.type_counters['general_pair_types']),
             }
         })
         return all_data
@@ -830,7 +883,8 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
     def _create_train_judge_dataloader(self, problem_type: str, data_len: int) -> DataLoader:
         if problem_type not in {'general'}:
             raise ValueError(f"Invalid problem type for judge: {problem_type}")
-        dataset_key = "general"
+        dataset_key = "general_pair"
+        # use pair data of question and answer for judging
         full_dataset = ray.get(self.dataset_manager.get_dataset.remote(dataset_key))
 
         strategy = self.config.azr.judge_data_mix_strategy
@@ -906,133 +960,6 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         print(judge_train_dataloader)
         assert len(judge_train_dataloader) >= 1
         return iter(judge_train_dataloader)
-
-    def _compute_batch_together(self, batch: DataProto, metrics: dict, timing_raw: dict, problem_type: str ) -> tuple[DataProto, dict]:
-        PrettyPrinter.section_header(f"Computing batch for pred and gen together")
-        # pop those keys for generation
-        gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-
-        # generate a batch
-        with _timer(f'gen/{problem_type}', timing_raw):
-            gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
-
-        batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                                                dtype=object)
-        # repeat to align with repeated responses in rollout
-        batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-        batch = batch.union(gen_batch_output)
-
-        # balance the number of valid tokens on each dp rank
-        self._balance_batch(batch, metrics=metrics)
-
-        # compute global_valid tokens
-        batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
-
-        # recompute old_log_probs
-        with _timer(f'old_log_prob/{problem_type}', timing_raw):
-            old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
-            batch = batch.union(old_log_prob)
-
-        if self.use_reference_policy:
-            with _timer(f'ref/{problem_type}', timing_raw):
-                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
-                batch = batch.union(ref_log_prob)
-
-        # compute values
-        if self.use_critic:
-            with _timer(f'values/{problem_type}', timing_raw):
-                values = self.critic_wg.compute_values(batch)
-                batch = batch.union(values)
-
-        with _timer(f'adv/{problem_type}', timing_raw):
-            if self.use_rm:
-                reward_tensor = self.rm_wg.compute_rm_score(batch)
-                batch = batch.union(reward_tensor)
-            
-            general_type_counters = ray.get(self.dataset_manager.get_type_statistics.remote('general_types'))
-    
-            # For computing together, we compute two batches, one gen batch and one pred batch, these two batches will use the same questions and generate different rewards
-
-            # make sure actor_rollout_wg n > 1
-            reward_fn_kwargs = {
-                'data': batch,
-                'problem_type': "together_general",
-                'rollout_actor_wg': self.actor_rollout_wg, # need this to estimate difficulty reward
-                'n_samples': self.config.azr.reward.n_samples,
-                'general_type_counters': general_type_counters,
-            } # kwargs for gen batch
-
-            with _timer(f'reward_fn/{problem_type}', timing_raw):
-                PrettyPrinter.status("REWARD", f"Computing rewards for {problem_type}...", "info")
-                reward_tensor_gen, reward_tensor_pred, train_metrics_gen, train_metrics_pred, valid_questions = self.reward_fn(**reward_fn_kwargs)
-                PrettyPrinter.status("REWARD", f"Found {len(valid_questions) if valid_questions else 0} valid questions", "success")
-
-            # Log new programs if available
-            if valid_questions and self.config.azr.random_print_max_programs > 0:
-                PrettyPrinter.section_header(f"New {problem_type} Questions")
-                max_print = min(self.config.azr.random_print_max_programs, len(valid_questions))
-                for question in random.sample(valid_questions, max_print):
-                    PrettyPrinter.status(f"PROBLEM TYPE", problem_type, "info")
-                    PrettyPrinter.status("QUESTION", question['question'], "info")
-                    PrettyPrinter.status("THOUGHT", question['thought'], "info")
-                    PrettyPrinter.status("GENERATION", question['generation'], "info")
-                    print("\n" + "-"*80 + "\n")
-
-            ray.get(self.dataset_manager.add_general_batch.remote(valid_questions, self.global_steps)) if valid_questions else None
-
-            if self.config.azr.data_selection_strategy.max_questions is not None :
-                truncated_length, before_length = ray.get(self.dataset_manager.truncate_datasets.remote(self.config.azr.data_selection_strategy.max_questions, 'general'))
-                PrettyPrinter.status("DATA", f"Truncated {truncated_length} questions from general dataset, max questions is {self.config.azr.data_selection_strategy.max_questions}, dataset size was {before_length} before truncation", "info")
-           
-            # Create independent copies of batch for gen_batch and pred_batch
-            gen_batch = deepcopy(batch)
-            pred_batch = deepcopy(batch)
-
-            # Combine all train_metrics
-            train_metrics_gen = {f'gen/{k}': np.mean(v) for k, v in train_metrics_gen.items()}
-            train_metrics_pred = {f'pred/{k}': np.mean(v) for k, v in train_metrics_pred.items()}
-            # log the number of valid programs added to the dataset
-            if problem_type.endswith('general'):
-                dataset_key = 'general'
-            else:
-                raise ValueError(f'Invalid problem type: {problem_type}')
-            train_metrics_gen[f'gen/num_valid_questions'] = ray.get(
-                self.dataset_manager.get_recent_additions.remote(
-                    dataset_key, self.global_steps, self._past_epoch_window
-                )
-            )
-            metrics.update(train_metrics_gen)
-            metrics.update(train_metrics_pred)
-            # Assign the reward tensor to both gen_batch and pred_batch
-            gen_batch.batch['token_level_scores'] = reward_tensor_gen
-            pred_batch.batch['token_level_scores'] = reward_tensor_pred
-
-            if not self.config.actor_rollout_ref.actor.get('use_kl_loss', False):
-                gen_batch, kl_metrics = apply_kl_penalty(gen_batch,
-                                                kl_ctrl=self.kl_ctrl,
-                                                kl_penalty=self.config.algorithm.kl_penalty)
-                metrics.update(kl_metrics)
-                pred_batch, kl_metrics = apply_kl_penalty(pred_batch,
-                                                kl_ctrl=self.kl_ctrl,
-                                                kl_penalty=self.config.algorithm.kl_penalty)
-                metrics.update(kl_metrics)
-            else:
-                gen_batch.batch['token_level_rewards'] = gen_batch.batch['token_level_scores']
-                pred_batch.batch['token_level_rewards'] = pred_batch.batch['token_level_scores']
-
-            gen_batch = compute_advantage(gen_batch,
-                                    adv_estimator=self.config.algorithm.adv_estimator,
-                                    gamma=self.config.algorithm.gamma,
-                                    lam=self.config.algorithm.lam,
-                                    num_repeat=self.config.actor_rollout_ref.rollout.n)
-            pred_batch = compute_advantage(pred_batch,
-                                    adv_estimator=self.config.algorithm.adv_estimator,
-                                    gamma=self.config.algorithm.gamma,
-                                    lam=self.config.algorithm.lam,
-                                    num_repeat=self.config.actor_rollout_ref.rollout.n)
-
-        gc.collect()
-        return gen_batch, pred_batch, metrics
     
     def _compute_batch(self, batch: DataProto, metrics: dict, timing_raw: dict, problem_type: str ) -> tuple[DataProto, dict]:
         PrettyPrinter.section_header(f"Computing batch for {problem_type}")
@@ -1078,7 +1005,6 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             
             general_type_counters = ray.get(self.dataset_manager.get_type_statistics.remote('general_types'))
     
-
             # make sure actor_rollout_wg n > 1
             if problem_type.startswith('gen'):
                 reward_fn_kwargs = {
@@ -1092,7 +1018,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                 reward_fn_kwargs = {
                     'data': batch, 
                     'rollout_actor_wg': self.actor_rollout_wg,
-                    'problem_type': problem_type, 
+                    'problem_type': problem_type,
                 }
             elif problem_type.startswith('judge'):
                 reward_fn_kwargs = {
@@ -1118,6 +1044,9 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     print("\n" + "-"*80 + "\n")
 
             ray.get(self.dataset_manager.add_general_batch.remote(valid_questions, self.global_steps)) if valid_questions else None
+            if problem_type.startswith('judge'):
+                ray.get(self.dataset_manager.add_general_pair_batch.remote(valid_questions, self.global_steps)) if valid_questions else None
+                # valid_questions are actually question-answer pairs here
 
             if self.config.azr.data_selection_strategy.max_questions is not None :
                 truncated_length, before_length = ray.get(self.dataset_manager.truncate_datasets.remote(self.config.azr.data_selection_strategy.max_questions, 'general'))
@@ -1139,6 +1068,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             batch.batch['token_level_scores'] = reward_tensor
 
             if not self.config.actor_rollout_ref.actor.get('use_kl_loss', False):
+                # [TODO]: is this correct?
                 batch, kl_metrics = apply_kl_penalty(batch,
                                                 kl_ctrl=self.kl_ctrl,
                                                 kl_penalty=self.config.algorithm.kl_penalty)
@@ -1160,6 +1090,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         PrettyPrinter.section_header("Initializing GeneralIO Seed Dataset (with full io_item structure)")
 
         examples = []
+        examples_pair = []
         split = "train"  # or "seed" if you prefer
 
         # Track global index
@@ -1194,7 +1125,29 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         'chosen_references': chosen_references,
                     }
                 }
+                io_item_pair = {
+                    "data_source": 'gen_general',
+                    "prompt": [{
+                        "role": "user",
+                        "content": io_prompt,
+                    }],
+                    "problem": '',
+                    "question": question,
+                    "answer": answer,
+                    "ability": "general",
+                    "reward_model": {
+                        "style": "rule",
+                        "ground_truth": answer,
+                    },
+                    "extra_info": {
+                        'split': split,
+                        'index': idx,
+                        'metric': 'gen_general',
+                        'chosen_references': chosen_references,
+                    }
+                }
                 examples.append(io_item)
+                examples_pair.append(io_item_pair)
                 idx += 1
             PrettyPrinter.status("INFO", f"Loaded {len(general_samples)} FusionBench examples", "info")
         except Exception as e:
@@ -1202,11 +1155,15 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
         # Shuffle and truncate
         random.shuffle(examples)
+        random.shuffle(examples_pair)
         seed_examples = examples[:1000]
 
         # Upload to ray
         ray.get(self.dataset_manager.add_general_batch.remote(seed_examples, self.global_steps))
         PrettyPrinter.status("SEED INIT", f"Successfully initialized with {len(seed_examples)} examples", "success")
+
+        ray.get(self.dataset_manager.add_general_pair_batch.remote(examples_pair, self.global_steps))
+        PrettyPrinter.status("SEED INIT", f"Successfully initialized with {len(examples_pair)} examples pairs", "success")
 
     def fit(self):
         """
@@ -1336,46 +1293,29 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         self._last_cleanup_step = self.global_steps
 
                     if 'general' in self.config.azr.problem_types:
-                        if self.config.azr.infer_pred_gen_together:
-                            if not self.pretrain_pred:
-                                try:
-                                    batch_dict = next(gen_general_dataloader)
-                                except StopIteration:
-                                    gen_general_dataloader = self._create_train_gen_dataloader(
-                                        problem_type='general',
-                                        data_len=data_len,
-                                        dataset_key='general',
-                                    )
-                                    batch_dict = next(gen_general_dataloader)
-                                gen_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                                gen_batch, pred_batch, metrics = self._compute_batch_together(gen_batch, metrics, timing_raw, problem_type='together_general')
-                                if self.config.azr.train_propose:
-                                    batches[f'gen_general'] = gen_batch
-                            batches[f'pred_general'] = pred_batch
-                        else:
-                            if not self.pretrain_pred:
-                                try:
-                                    batch_dict = next(gen_general_dataloader)
-                                except StopIteration:
-                                    gen_general_dataloader = self._create_train_gen_dataloader(
-                                        problem_type='general',
-                                        data_len=data_len,
-                                        dataset_key='general',
-                                    )
-                                    batch_dict = next(gen_general_dataloader)
-                                gen_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                                gen_batch, metrics = self._compute_batch(gen_batch, metrics, timing_raw, problem_type='gen_general')
-                                if self.config.azr.train_propose:
-                                    batches[f'gen_general'] = gen_batch
-                            batch_dict = next(pred_general_dataloader)
-                            pred_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                            pred_batch, metrics = self._compute_batch(pred_batch, metrics, timing_raw, problem_type='pred_general')
-                            batches[f'pred_general'] = pred_batch
-                            batch_dict = next(judge_general_dataloader)
-                            judge_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                            judge_batch, metrics = self._compute_batch(judge_batch, metrics, timing_raw, problem_type='judge_general')
-                            if self.config.azr.train_judge:
-                                batches[f'judge_general'] = judge_batch
+                        if not self.pretrain_pred:
+                            try:
+                                batch_dict = next(gen_general_dataloader)
+                            except StopIteration:
+                                gen_general_dataloader = self._create_train_gen_dataloader(
+                                    problem_type='general',
+                                    data_len=data_len,
+                                    dataset_key='general',
+                                )
+                                batch_dict = next(gen_general_dataloader)
+                            gen_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                            gen_batch, metrics = self._compute_batch(gen_batch, metrics, timing_raw, problem_type='gen_general')
+                            if self.config.azr.train_propose:
+                                batches[f'gen_general'] = gen_batch
+                        batch_dict = next(pred_general_dataloader)
+                        pred_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                        pred_batch, metrics = self._compute_batch(pred_batch, metrics, timing_raw, problem_type='pred_general')
+                        batches[f'pred_general'] = pred_batch
+                        batch_dict = next(judge_general_dataloader)
+                        judge_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                        judge_batch, metrics = self._compute_batch(judge_batch, metrics, timing_raw, problem_type='judge_general')
+                        if self.config.azr.train_judge:
+                            batches[f'judge_general'] = judge_batch
 
 
                     # concatenate batches

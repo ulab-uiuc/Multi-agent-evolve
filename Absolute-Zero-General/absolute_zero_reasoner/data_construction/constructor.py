@@ -174,7 +174,7 @@ def get_judge_general_io_data(
         io_prompt = instruction_template.format(
             get_general_judger_prompt(
                 question=io_item['question'],
-                answer=io_item['answer'],
+                answer=io_item['reward_mode']['ground_truth'],
             )
         )
         print(f"Generated prompt: {io_prompt}")
@@ -187,11 +187,11 @@ def get_judge_general_io_data(
                     "content": io_prompt,
                 }],
                 "problem": io_item['question'],
-                "answer": io_item['answer'],
+                "answer": io_item.get('answer', ''),
                 "ability": "general",
                 "reward_model": {
                     "style": "rule",
-                    "ground_truth": io_item.get('answer',''),
+                    "ground_truth": io_item['reward_model']['ground_truth'],
                 },
                 "extra_info": {
                     'split': split,

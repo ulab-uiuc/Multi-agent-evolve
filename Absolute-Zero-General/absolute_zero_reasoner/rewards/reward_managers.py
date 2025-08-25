@@ -906,6 +906,7 @@ class GeneralIORewardManager:
         boxed_retry: bool = False,
         judge_with_actor: bool = False,
         train_judge: bool = False,
+        infer_together: bool = False,
         **kwargs
     ):
         self.tokenizer = tokenizer
@@ -925,6 +926,7 @@ class GeneralIORewardManager:
         self.boxed_retry = boxed_retry
         self.judge_with_actor = judge_with_actor
         self.train_judge = train_judge
+        self.infer_together = infer_together
 
         assert not self.train_judge or self.judge_with_actor, "judge_with_actor must be activated if train_judge is True"
         
@@ -1155,7 +1157,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
             try:
                 if not self.judge_with_actor:
                     for data_dict in data_dicts:
-                        avg_pred_scores.append(self._generate_llm_response(self._generate_prompt_for_pred(data_dict))[0])
+                        avg_pred_scores.append(self._generate_llm_response(self._generate_prompt_for_pred(data_dict))[0], self.infer_together)
                     return avg_gen_scores, avg_pred_scores
 
                 if rollout_actor_wg is None:
@@ -1164,15 +1166,15 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 # Build evaluation prompts (one per answer)
                 eval_prompts = []
                 for data_dict in data_dicts:
-                    eval_text = self._generate_prompt_for_pred(data_dict)
+                    eval_text = self._generate_prompt_for_pred(data_dict, self.infer_together)
                     eval_prompts.append({
                         'prompt': [{'role': 'user', 'content': eval_text}],
                         'uid': data_dict['uid'],
                     })
-                    PrettyPrinter.section_header(f"Creating prompt for actor evaluation of answer: {data_dict.get('question', '')}\n\n{data_dict.get('answer', '')}")
 
                 # Optionally repeat judgments (n_samples) if desired
                 eval_prompts = eval_prompts  # could multiply by another factor if multi-judging needed
+                # [TODO] Add n_samples here maybe
 
                 temp_judge_file = f'{self.output_path}/temp_generalio_judge.parquet'
                 pd.DataFrame(eval_prompts).to_parquet(temp_judge_file)
@@ -1192,8 +1194,14 @@ When you reference your own scores, you do not use the <score> and </score> tags
                     print("Actor evaluation response:", text)
                     try:
                         # assert len(scores) == 1, f"Expected one score in the response, got: {text}"
-                        a = (scores[0] - 1) / 9.0
-                        uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
+                        if self.infer_together:
+                            # assert len(scores) == 2, f"Expected two scores in the response for together, got: {text}"
+                            a = (scores[1] - 1) / 9.0
+                            uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
+                            continue
+                        else:
+                            a = (scores[0] - 1) / 9.0
+                            uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
                     except:
                         print("Falling back to neutral scores.")
                         pass
@@ -1212,7 +1220,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
 
             return avg_gen_scores, avg_pred_scores
         
-        if problem_type.startswith("gen"):
+        if problem_type.startswith("gen") and not self.infer_together:
             try:
                 if not self.judge_with_actor:
                     for data_dict in data_dicts:
@@ -1328,12 +1336,11 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 eval_prompts = []
                 for uid, resp_list in responses_by_uid.items():
                     for idx, resp in enumerate(resp_list):
-                        if problem_type.startswith("gen"):
-                            eval_text = self._generate_prompt_for_judge(resp["question"], resp["response"], prompt_type="answer")
-                            PrettyPrinter.section_header(f"Creating prompt for actor evaluation of answer: {resp['question']}\n\n{resp['response']}")
-                        else: # together only
-                            eval_text = self._generate_prompt_for_judge(resp["question"], resp["response"], prompt_type="together")
-                            PrettyPrinter.section_header(f"Creating prompt for actor evaluation of question and answer: {resp['question']}\n\n{resp['response']}")
+                        eval_text = self._generate_prompt_for_judge(resp["question"], resp["response"], prompt_type="together" if self.infer_together else "answer")
+                        if self.infer_together:
+                            PrettyPrinter.section_header(f"Creating prompt for actor evaluation of question and answer for difficulty score: {resp['question']}\n\n{resp['response']}")
+                        else:
+                            PrettyPrinter.section_header(f"Creating prompt for actor evaluation of answer for difficulty score: {resp['question']}\n\n{resp['response']}")
                         eval_prompts.append({
                             'prompt': [{'role': 'user', 'content': eval_text}],
                             'uid': uid,
@@ -1360,15 +1367,15 @@ When you reference your own scores, you do not use the <score> and </score> tags
                     scores = self.extract_score_from_tags(text)
                     print("Actor evaluation response:", text)
                     try:
-                        if problem_type.startswith("gen"):
-                            # assert len(scores) == 1, f"Expected one score in the response, got: {text}"
-                            a = (scores[0] - 1) / 9.0
-                            uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
-                        else:
+                        if self.infer_together:
                             # assert len(scores) == 2, f"Expected two scores in the response, got: {text}"
                             q = (scores[0] - 1) / 9.0
                             a = (scores[1] - 1) / 9.0
                             uid2_q_scores[uid].append(min(1.0, max(0.0, q)))
+                            uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
+                        else:
+                            # assert len(scores) == 1, f"Expected one score in the response, got: {text}"
+                            a = (scores[0] - 1) / 9.0
                             uid2_a_scores[uid].append(min(1.0, max(0.0, a)))
                     except:
                         print("Falling back to neutral scores.")
@@ -1381,7 +1388,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
                         avg_pred_scores.append(float(np.mean(uid2_a_scores[uid])))
                     else:
                         avg_pred_scores.append(0.5)
-                    if problem_type.startswith("together"):
+                    if self.infer_together:
                         if uid2_q_scores.get(uid):
                             avg_gen_scores.append(float(np.mean(uid2_q_scores[uid])))
                         else:
@@ -1395,24 +1402,19 @@ When you reference your own scores, you do not use the <score> and </score> tags
                         pred_scores = []
                         for response_data in responses_by_uid[uid]:
                             # Create evaluation prompt
-                            if problem_type.startswith("gen"):
-                                eval_prompt = self._generate_prompt_for_judge(
-                                    response_data["question"],
-                                    response_data["response"],
-                                    prompt_type="answer"
-                                )
-                                PrettyPrinter.section_header(f"Creating prompt for actor evaluation of answer: {response_data['question']}\n\n{response_data['response']}")
+                            eval_prompt = self._generate_prompt_for_judge(
+                                response_data["question"],
+                                response_data["response"],
+                                prompt_type = "together" if self.infer_together else "answer",
+                            )
+                            if self.infer_together:
+                                PrettyPrinter.section_header(f"Creating prompt for actor evaluation of question and answer for difficulty score:: {response_data['question']}\n\n{response_data['response']}")
                             else:
-                                eval_prompt = self._generate_prompt_for_judge(
-                                    response_data["question"],
-                                    response_data["response"],
-                                    prompt_type="together"
-                                )
-                                PrettyPrinter.section_header(f"Creating prompt for actor evaluation of question and answer: {response_data['question']}\n\n{response_data['response']}")
+                                PrettyPrinter.section_header(f"Creating prompt for actor evaluation of answer for difficulty score: {response_data['question']}\n\n{response_data['response']}")
                             
                             scores = self._generate_llm_response(eval_prompt)
                             try:
-                                if problem_type.startswith("gen"):
+                                if not self.infer_together:
                                     # assert len(scores) == 1, f"Expected one score in the response, got: {scores}"
                                     pred_scores.append(scores[0])
                                 else:
@@ -1424,18 +1426,18 @@ When you reference your own scores, you do not use the <score> and </score> tags
                         
                         avg_pred_score = np.mean(pred_scores) if pred_scores else 0.5
                         avg_pred_scores.append(avg_pred_score)
-                        if problem_type.startswith("together"):
+                        if self.infer_together:
                             avg_gen_score = np.mean(gen_scores) if gen_scores else 0.5
                             avg_gen_scores.append(avg_gen_score)
                     else:
                         avg_pred_scores.append(0.5)
-                        if problem_type.startswith("together"):
+                        if self.infer_together:
                             avg_gen_scores.append(0.5)
                         
         except Exception as e:
             print(f"Error in solver score computation: {e}")
             avg_pred_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
-            if problem_type.startswith("together"):
+            if self.infer_together:
                 avg_gen_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
         
         return avg_gen_scores, avg_pred_scores
@@ -1497,7 +1499,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
             print(f"Error in LLM response generation: {e}")
             return [0.0]
 
-    def _generate_prompt_for_gen(self, data_dict: Dict) -> str:
+    def _generate_prompt_for_gen(self, data_dict: Dict, answer=None) -> str:
         """Generate the LLM as judge prompt for evaluating the question generation quality."""
         def extract_question(text):
             pattern = r'<question>(.*?)</question>'
@@ -1509,17 +1511,25 @@ When you reference your own scores, you do not use the <score> and </score> tags
         else:
             question = "This is not a valid question."
 
-        prompt = self._generate_prompt_for_judge(question, None, prompt_type="question")
-        PrettyPrinter.code_block(f"Generated prompt for question generation evaluation:\n{prompt}")
+        if answer:
+            prompt = self._generate_prompt_for_judge(question, answer, prompt_type="together")
+            PrettyPrinter.code_block(f"Generated prompt for question generation evaluation with paired answer:\n{prompt}")
+        else:
+            prompt = self._generate_prompt_for_judge(question, None, prompt_type="question")
+            PrettyPrinter.code_block(f"Generated prompt for question generation evaluation:\n{prompt}")
         return prompt
 
-    def _generate_prompt_for_pred(self, data_dict: Dict) -> str:
+    def _generate_prompt_for_pred(self, data_dict: Dict, infer_together=False) -> str:
         """Generate the LLM prompt for 'pred' type problems."""
         question = data_dict.get('question', '')
-        PrettyPrinter.code_block(f"Generated prompt for question evaluation:\n{question}")
         answer = data_dict.get('answer', data_dict.get('generation', '')).split('[Your final answer to the question, structured and clear, without restating the question]')[-1]
-        PrettyPrinter.code_block(f"Generated answer for question evaluation:\n{answer}") 
-        prompt = self._generate_prompt_for_judge(question, answer, prompt_type="answer")
+
+        if infer_together:
+            prompt = self._generate_prompt_for_judge(question, answer, prompt_type="together")
+            PrettyPrinter.code_block(f"Generated prompt for answer evaluation with question:\n{prompt}")
+        else:
+            prompt = self._generate_prompt_for_judge(question, answer, prompt_type="answer")
+            PrettyPrinter.code_block(f"Generated prompt for answer evaluation:\n{prompt}")
         return prompt
 
     def _compute_score_for_gen(self, data_dict: Dict, external_llm_score: float, solver_avg_score: float) -> float:
@@ -1649,8 +1659,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
 
         all_scores = defaultdict(list)
         data_dicts = []
-        valid_questions = []  # For GeneralIO tasks, we track valid questions instead of programs
-        correct_predictions = []
+        valid_data = []  # For GeneralIO tasks, we track valid questions or question and answer pairs
         uids = np.array([str(uuid.uuid4()) for _ in range(len(data))], dtype=object)
         
         if problem_type is None:
@@ -1692,7 +1701,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
                     question = None
                 # For gen tasks, add to valid_questions
                 if question!=None:
-                    valid_questions.append({
+                    valid_data.append({
                         'question': question,
                         'generation': data_dict.get('generation', ''),
                         'thought': data_dict.get('thought', ''),
@@ -1721,7 +1730,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 if self.split == 'train':
                     if llm_scores[i] > 0.5:  # Consider scores > 0.5 as correct
                         reward_tensor[i, valid_response_length - 1] = llm_scores[i]
-                        correct_predictions.append({
+                        valid_data.append({
                             'question': data_dict.get('question', ''),
                             'answer': data_dict.get('answer', ''),
                             'thought': data_dict.get('thought', ''),
@@ -1732,7 +1741,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 elif self.split == 'test':
                     reward_tensor[i, valid_response_length - 1] = llm_scores[i]
                     if llm_scores[i] > 0.5:
-                        correct_predictions.append({
+                        valid_data.append({
                             'question': data_dict.get('question', ''),
                             'answer': data_dict.get('answer', ''),
                             'thought': data_dict.get('thought', ''),
@@ -1742,83 +1751,6 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 all_scores['llm_judge_score'].append(llm_scores[i])
             
             all_scores['accuracy'] = all_scores['llm_judge_score']  # For compatibility
-        elif problem_type.startswith('together'):
-            PrettyPrinter.section_header("Computing Prediction and Generation Rewards for GeneralIO Tasks in a single inference")
-
-            reward_tensor_gen = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
-            reward_tensor_pred = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
-            all_scores_gen = defaultdict(list)
-            all_scores_pred = defaultdict(list)
-
-            avg_gen_scores, avg_pred_scores = self._get_all_scores(data_dicts, rollout_actor_wg, n_samples, problem_type)
-            
-            # For prediction generation tasks, use LLM judge score directly
-            for i, data_dict in enumerate(data_dicts):
-                valid_response_length = data_dict['valid_response_length']
-
-                gen_score = avg_gen_scores[i]
-                pred_score = avg_pred_scores[i]
-
-                difficulty_score = 1 - pred_score
-                final_gen_score = 0.5 * gen_score + 0.5 * difficulty_score
-
-                reward_tensor_gen[i, valid_response_length - 1] = final_gen_score
-                all_scores_gen['llm_judge_score'].append(gen_score)
-                all_scores_gen['difficulty_score'].append(difficulty_score)
-                all_scores_gen['combined_score'].append(final_gen_score)
-                def extract_question(text):
-                    pattern = r'<question>(.*?)</question>'
-                    matches = re.findall(pattern, text, re.DOTALL)
-                    return matches
-                question = extract_question(data_dict.get('generation', '<question></question>').split("[Your designed task]")[-1])
-                if question != []:
-                    question = question[-1]
-                else:
-                    question = None
-                # For gen tasks, add to valid_questions
-                if question!=None:
-                    valid_questions.append({
-                        'question': question,
-                        'generation': data_dict.get('generation', ''),
-                        'thought': data_dict.get('thought', ''),
-                        'answer': data_dict.get('generation', ''),
-                        'uid': data_dict['uid'],
-                    })
-                else:
-                    PrettyPrinter.section_header(f"Processing Question {i+1}/{len(data_dicts)}")
-                    PrettyPrinter.status(f"Question: {data_dict.get('question', '')}", "", "info")
-                    PrettyPrinter.status(f"Generation: {data_dict.get('generation', '')}", "", "info")
-                    PrettyPrinter.status(f"Thought: {data_dict.get('thought', '')}", "", "info")
-                    PrettyPrinter.status(f"LLM Judge Score: {gen_score:.4f}", f"Difficulty Score: {difficulty_score:.4f}", "info")
-                    PrettyPrinter.status(f"Combined Score: {final_score:.4f}", "", "info")
-                    print("\n" + "-"*80 + "\n")
-
-                if self.split == 'train':
-                    if pred_score > 0.5:  # Consider scores > 0.5 as correct
-                        reward_tensor_pred[i, valid_response_length - 1] = pred_score
-                        correct_predictions.append({
-                            'question': data_dict.get('question', ''),
-                            'answer': data_dict.get('answer', ''),
-                            'thought': data_dict.get('thought', ''),
-                            'uid': data_dict['uid'],
-                        })
-                    else:
-                        reward_tensor[i, valid_response_length - 1] = pred_score
-                elif self.split == 'test':
-                    reward_tensor_pred[i, valid_response_length - 1] = pred_score
-                    if pred_score > 0.5:
-                        correct_predictions.append({
-                            'question': data_dict.get('question', ''),
-                            'answer': data_dict.get('answer', ''),
-                            'thought': data_dict.get('thought', ''),
-                            'uid': data_dict['uid'],
-                        })
-                all_scores_pred['llm_judge_score'].append(pred_score)
-
-            all_scores_gen['solver_avg_scores'] = avg_pred_scores
-            all_scores_pred['accuracy'] = all_scores['llm_judge_score']  # For compatibility
-
-            return reward_tensor_gen, reward_tensor_pred, all_scores_gen, all_scores_pred, valid_questions
         elif problem_type.startswith("judge"):
             PrettyPrinter.section_header("Computing Judge Rewards for GeneralIO Tasks")
             for i, data_dict in enumerate(data_dicts):
@@ -1835,7 +1767,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
             
             all_scores['accuracy'] = [0.5] * len(data_dicts)
 
-        return reward_tensor, all_scores, valid_questions
+        return reward_tensor, all_scores, valid_data
 
 
 class BenchmarkEvaluationRewardManager:
