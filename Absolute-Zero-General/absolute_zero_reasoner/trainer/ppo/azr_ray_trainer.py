@@ -1029,24 +1029,25 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
             with _timer(f'reward_fn/{problem_type}', timing_raw):
                 PrettyPrinter.status("REWARD", f"Computing rewards for {problem_type}...", "info")
-                reward_tensor, train_metrics, valid_questions = self.reward_fn(**reward_fn_kwargs)
-                PrettyPrinter.status("REWARD", f"Found {len(valid_questions) if valid_questions else 0} valid questions", "success")
+                reward_tensor, train_metrics, valid_data = self.reward_fn(**reward_fn_kwargs)
+                PrettyPrinter.status("REWARD", f"Found {len(valid_data) if valid_data else 0} valid data for {problem_type}", "success")
 
-            # Log new programs if available
-            if valid_questions and self.config.azr.random_print_max_programs > 0:
+            # Log new questions, for now pairs will not be logged
+            if valid_data and self.config.azr.random_print_max_programs > 0 and problem_type.startswith('gen'):
                 PrettyPrinter.section_header(f"New {problem_type} Questions")
-                max_print = min(self.config.azr.random_print_max_programs, len(valid_questions))
-                for question in random.sample(valid_questions, max_print):
+                max_print = min(self.config.azr.random_print_max_programs, len(valid_data))
+                for question in random.sample(valid_data, max_print):
                     PrettyPrinter.status(f"PROBLEM TYPE", problem_type, "info")
                     PrettyPrinter.status("QUESTION", question['question'], "info")
                     PrettyPrinter.status("THOUGHT", question['thought'], "info")
                     PrettyPrinter.status("GENERATION", question['generation'], "info")
                     print("\n" + "-"*80 + "\n")
-
-            ray.get(self.dataset_manager.add_general_batch.remote(valid_questions, self.global_steps)) if valid_questions else None
-            if problem_type.startswith('judge'):
-                ray.get(self.dataset_manager.add_general_pair_batch.remote(valid_questions, self.global_steps)) if valid_questions else None
-                # valid_questions are actually question-answer pairs here
+            
+            if problem_type.startswith('gen'):
+                ray.get(self.dataset_manager.add_general_batch.remote(valid_data, self.global_steps)) if valid_data else None
+            if problem_type.startswith('pred'):
+                ray.get(self.dataset_manager.add_general_pair_batch.remote(valid_data, self.global_steps)) if valid_data else None
+                # valid_data are actually question-answer pairs here
 
             if self.config.azr.data_selection_strategy.max_questions is not None :
                 truncated_length, before_length = ray.get(self.dataset_manager.truncate_datasets.remote(self.config.azr.data_selection_strategy.max_questions, 'general'))
@@ -1060,6 +1061,16 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                 else:
                     raise ValueError(f'Invalid problem type: {problem_type}')
                 train_metrics[f'{problem_type}/num_valid_questions'] = ray.get(
+                    self.dataset_manager.get_recent_additions.remote(
+                        dataset_key, self.global_steps, self._past_epoch_window
+                    )
+                )
+            if problem_type.startswith('pred'):
+                if problem_type.endswith('general'):
+                    dataset_key = 'general_pair'
+                else:
+                    raise ValueError(f'Invalid problem type: {problem_type}')
+                train_metrics[f'{problem_type}/num_valid_pairs'] = ray.get(
                     self.dataset_manager.get_recent_additions.remote(
                         dataset_key, self.global_steps, self._past_epoch_window
                     )
