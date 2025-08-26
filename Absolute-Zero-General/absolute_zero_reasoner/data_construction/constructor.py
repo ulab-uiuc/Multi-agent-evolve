@@ -192,7 +192,7 @@ def get_judge_general_io_data(
                 "ability": "general",
                 "reward_model": {
                     "style": "rule",
-                    "ground_truth": io_item['reward_model']['ground_truth'],
+                    "ground_truth": io_item.get('answer', ''),
                 },
                 "extra_info": {
                     'split': split,
