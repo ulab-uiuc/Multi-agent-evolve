@@ -73,6 +73,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.pretrain_pred_steps=-1 \
     azr.problem_types=['general'] \
     azr.pred_data_mix_strategy=uniform_total \
+    +azr.judge_data_mix_strategy=uniform_total \
+    +azr.train_judge=False \
     azr.train_propose=True \
     azr.reward.n_samples=3 \
     azr.reward.generation_reward_config.format_reward=false \
@@ -85,4 +87,6 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.data_selection_strategy.batched_estimate=false \
     azr.data_selection_strategy.io_n=1 \
     trainer.resume_mode=disable \
+    trainer.debug=True \
+    trainer.debug_port=1234 \
     +trainer.total_epochs=30 $@

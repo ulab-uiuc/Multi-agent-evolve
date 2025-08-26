@@ -174,7 +174,7 @@ def get_judge_general_io_data(
         io_prompt = instruction_template.format(
             get_general_judger_prompt(
                 question=io_item['question'],
-                answer=io_item['reward_mode']['ground_truth'],
+                answer=io_item['reward_model']['ground_truth'],
             )
         )
         print(f"Generated prompt: {io_prompt}")

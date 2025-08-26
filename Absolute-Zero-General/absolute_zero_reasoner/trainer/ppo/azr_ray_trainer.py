@@ -1322,11 +1322,11 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         pred_batch: DataProto = DataProto.from_single_dict(batch_dict)
                         pred_batch, metrics = self._compute_batch(pred_batch, metrics, timing_raw, problem_type='pred_general')
                         batches[f'pred_general'] = pred_batch
-                        batch_dict = next(judge_general_dataloader)
-                        judge_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                        judge_batch, metrics = self._compute_batch(judge_batch, metrics, timing_raw, problem_type='judge_general')
-                        if self.config.azr.train_judge:
-                            batches[f'judge_general'] = judge_batch
+                        # batch_dict = next(judge_general_dataloader)
+                        # judge_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                        # judge_batch, metrics = self._compute_batch(judge_batch, metrics, timing_raw, problem_type='judge_general')
+                        # if self.config.azr.train_judge:
+                        #     batches[f'judge_general'] = judge_batch
 
 
                     # concatenate batches
