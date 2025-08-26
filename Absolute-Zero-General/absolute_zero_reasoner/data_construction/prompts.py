@@ -136,6 +136,28 @@ You will be given a cognitive, creative, logical、mathematical、or planning-re
 
 """
 
+general_judge_question_answer_prompt = """
+
+"""
+
+general_judge_answer_prompt = """
+## Task: Provide a High-Quality Score for a given answer to a question
+
+You will be given a question and an answer. Your job is to evaluate the quality of the answer based on its correctness, clarity, and relevance to the question.
+
+### Instructions:
+Consider the following criteria when evaluating:
+- Is the solution correct and accurate?
+- Is it complete and comprehensive?
+- Does it properly address the question?
+- Is the reasoning clear and logical?
+- Determine what score is most appropriate
+
+"""
+
+# [TODO] above prompts may need to be modified in the future
+# maybe <think></think> tags for all prompts?
+
 code_input_prompt = """
 ## Task: Create a Python Code Snippet (where custom classes are allowed, which should be defined at the top of the code snippet) with one Matching Input
 
@@ -497,6 +519,13 @@ def get_general_predictor_prompt(
 ) -> str:
     # Generate a general prompt for the predictor
     return general_prediction_prompt + f"\n\n### Question:\n{question}\n\n---\n\n### Output Template:\n[Your final answer to the question, structured and clear, without restating the question]"
+
+def get_general_judger_prompt(
+        question: str,
+        answer: str,
+) -> str:
+    # Generate a general prompt for the judger
+    return general_judge_answer_prompt + f"\n\n### Question:\n{question}\n\n---\n\n### Answer:\n{answer}\n\n---\n\n### Output Template:\n[Your score for the answer to the question, without restating the question or the answer. Use an integer scale from 1 to 10, where 1 is the lowest quality and 10 is the highest quality]"
 
 def get_code_problem_generator_prompt(
     problem_type: str,
