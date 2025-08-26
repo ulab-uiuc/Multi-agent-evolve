@@ -1157,7 +1157,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
             try:
                 if not self.judge_with_actor:
                     for data_dict in data_dicts:
-                        avg_pred_scores.append(self._generate_llm_response(self._generate_prompt_for_pred(data_dict), self.infer_together)[0])
+                        avg_pred_scores.append(self._generate_llm_response(self._generate_prompt_for_pred(data_dict, self.infer_together))[0])
                     return avg_gen_scores, avg_pred_scores
 
                 if rollout_actor_wg is None:
@@ -1696,8 +1696,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
                     return matches
                 question = extract_question(data_dict.get('generation', '<question></question>').split("[Your designed task]")[-1])
                 if question != []:
-                    quest
-                    question[-1]
+                    question = question[-1]
                 else:
                     question = None
                 # For gen tasks, add to valid_questions

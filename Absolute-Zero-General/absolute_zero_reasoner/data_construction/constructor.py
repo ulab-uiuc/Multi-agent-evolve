@@ -84,8 +84,8 @@ def get_gen_general_io_data(
             io_item = {
                 "data_source": 'gen_general',
                 "prompt": [{"role": "user", "content": io_prompt}],
-                "problem": '',
                 "question": question,
+                "answer": "",
                 "ability": "general",
                 "reward_model": {"style": "rule", "ground_truth": ''},
                 "extra_info": {
@@ -133,7 +133,8 @@ def get_pred_general_io_data(
                     "role": "user",
                     "content": io_prompt,
                 }],
-                "problem": io_item['question'],
+                "question": io_item['question'],
+                "answer": "",
                 "ability": "general",
                 "reward_model": {
                     "style": "rule",
@@ -186,7 +187,7 @@ def get_judge_general_io_data(
                     "role": "user",
                     "content": io_prompt,
                 }],
-                "problem": io_item['question'],
+                "question": io_item['question'],
                 "answer": io_item.get('answer', ''),
                 "ability": "general",
                 "reward_model": {
