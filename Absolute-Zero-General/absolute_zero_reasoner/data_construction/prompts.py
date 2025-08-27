@@ -523,9 +523,21 @@ def get_general_predictor_prompt(
 def get_general_judger_prompt(
         question: str,
         answer: str,
+        prompt_manager=None,
 ) -> str:
-    # Generate a general prompt for the judger
-    return general_judge_answer_prompt + f"\n\n### Question:\n{question}\n\n---\n\n### Answer:\n{answer}\n\n---\n\n### Output Template:\n[Your score for the answer to the question, without restating the question or the answer. Use an integer scale from 1 to 10, where 1 is the lowest quality and 10 is the highest quality]"
+    # Use prompt manager if available, otherwise fall back to static prompt
+    if prompt_manager:
+        # Get the appropriate judge template based on infer_together setting
+        judge_template = prompt_manager.get_judge_instruction(prompt_type="answer")
+        # Format with question and answer
+        try:
+            return judge_template.format(question=question, answer=answer)
+        except (KeyError, ValueError):
+            # If template formatting fails, fall back to appending
+            return f"{judge_template}\n\n### Question:\n{question}\n\n### Answer:\n{answer}"
+    else:
+        # Fallback to original static prompt
+        return general_judge_answer_prompt + f"\n\n### Question:\n{question}\n\n---\n\n### Answer:\n{answer}\n\n---\n\n### Output Template:\n[Your score for the answer to the question, without restating the question or the answer. Use an integer scale from 1 to 10, where 1 is the lowest quality and 10 is the highest quality]"
 
 def get_code_problem_generator_prompt(
     problem_type: str,
