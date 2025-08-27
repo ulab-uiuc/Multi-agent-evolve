@@ -1009,7 +1009,7 @@ class GeneralIORewardManager:
                 raise ValueError(f"Invalid prompt type: {prompt_type}")
             
             # Get optimized prompt from prompt_manager
-            judge_prompt_template = self.prompt_manager.get_prompt(judge_type)
+            judge_prompt_template = self.prompt_manager.get_template(judge_type)
             
             # Fill in the template variables
             if prompt_type == "answer":
