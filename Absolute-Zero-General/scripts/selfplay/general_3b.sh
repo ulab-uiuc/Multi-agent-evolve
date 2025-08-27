@@ -88,4 +88,12 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.data_selection_strategy.batched_estimate=false \
     azr.data_selection_strategy.io_n=1 \
     trainer.resume_mode=disable \
-    +trainer.total_epochs=30 $@
+    +trainer.total_epochs=30 \
+    reward_fn.enable_actor_prompt_optimization=false \
+    reward_fn.prompt_optimization.frequency=1 \
+    reward_fn.prompt_optimization.accuracy_threshold=0.3 \
+    reward_fn.prompt_optimization.max_improvements_per_step=3 \
+    reward_fn.prompt_optimization.enable_safety_validation=true \
+    +reward_fn.prompt_optimization.optimization_temperature=0.7 \
+    +reward_fn.prompt_optimization.optimization_max_tokens=1024 \
+    +reward_fn.prompt_optimization.backup_prompts=true $@
