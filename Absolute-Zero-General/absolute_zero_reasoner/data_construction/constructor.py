@@ -4,7 +4,7 @@ from numpy import random
 import pandas as pd
 from transformers import AutoTokenizer
 
-from absolute_zero_reasoner.data_construction.prompts import get_code_problem_generator_prompt, get_code_problem_predictor_prompt, get_general_generator_prompt,get_general_generation_with_reference_prompt, get_general_predictor_prompt, get_general_judger_prompt
+from absolute_zero_reasoner.data_construction.prompts import get_code_problem_generator_prompt, get_code_problem_predictor_prompt, get_general_generator_prompt,get_general_generation_with_reference_prompt, get_general_predictor_prompt, get_general_judger_prompt, general_generation_based_on_reference_prompt
 from absolute_zero_reasoner.data_construction.process_data import boxed_instruction, instruction_following
 from absolute_zero_reasoner.utils.code_utils.parsers import replace_main_function_name
 
@@ -36,7 +36,9 @@ def get_gen_general_io_data(
     
     # Use dynamic prompt if prompt_manager is available
     if prompt_manager:
-        instruction_template = prompt_manager.get_proposer_instruction()
+        # For proposer, we have two different types of prompts:
+        # 1. Original prompt for generating from scratch (no references)
+        # 2. Reference-based prompt for modifying existing tasks (with references)
         print(f"[DEBUG] get_gen_general_io_data: Using dynamic proposer instruction")
     else:
         instruction_template = '{}'
@@ -74,16 +76,31 @@ def get_gen_general_io_data(
             chosen_references = [io_data[i] for i in chosen_indices]
         if not chosen_references:
             if prompt_manager:
-                # Use enhanced proposer instruction with empty references
-                io_prompt = f"{instruction_template}\n\n{get_general_generator_prompt(reference_questions=chosen_references)}"
+                # For no references: use original generation prompt
+                instruction_template = prompt_manager.get_proposer_instruction()  # This gets original prompt
+                reference_questions_string = ""
+                for i, question in enumerate(chosen_references):
+                    reference_questions_string += f"<question>\n{question['question']}\n</question>\n"
+                io_prompt = f"{instruction_template}\n\n{reference_questions_string}\n### Your Task:\nDesign a new and unique task that meets the requirements outlined above. Remember to structure your response in the specified format.\n\n---\n\n### Output Template:\n```<think>\n[Your reasoning about the task]\n</think>\n\n<question>\n[Your designed task]\n</question>```"
             else:
                 io_prompt = instruction_template.format(
                     get_general_generator_prompt(reference_questions=chosen_references)
                 )
         else:
             if prompt_manager:
-                # Use enhanced proposer instruction with references
-                io_prompt = f"{instruction_template}\n\n{get_general_generation_with_reference_prompt(reference_questions=chosen_references)}"
+                # For references: use reference-based generation prompt directly (not via prompt manager)
+                # Since prompt manager currently only stores the original prompt
+                reference_questions_string = ""
+                for i, question in enumerate(chosen_references):
+                    reward_model = question.get('reward_model', {})
+                    if reward_model.get('ground_truth') is not None:
+                        ground_truth = reward_model['ground_truth']
+                    else:
+                        ground_truth = "N/A"
+                    reference_questions_string += f"<question>\n{question['question']}\n</question>\n\n Ground Truth Answer: {ground_truth}\n\n"
+                
+                # Use the reference-based prompt template directly
+                io_prompt = f"{general_generation_based_on_reference_prompt}\n\n{reference_questions_string}\n### Your Task:\nCreate a Challenging and Modified Version of the Reference Task. Remember to structure your response in the specified format.\n\n---\n\n### Output Template:\n```<think>\n[Your reasoning about the task]\n</think>\n\n<question>\n[Your modified task]\n</question>```"
             else:
                 io_prompt = instruction_template.format(
                     get_general_generation_with_reference_prompt(reference_questions=chosen_references)
