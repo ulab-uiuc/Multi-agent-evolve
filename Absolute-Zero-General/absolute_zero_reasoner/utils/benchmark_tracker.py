@@ -183,58 +183,103 @@ class BenchmarkTracker:
         PrettyPrinter.status("TRACKER", f"Recorded {len(benchmark_results)} results for step {step}", "success")
     
     def _create_step_summary(self, step: int, timestamp: str, results: List[BenchmarkResult]):
-        """Create summary for a specific step."""
+        """Create or update summary for a specific step."""
         print(f"[DEBUG] _create_step_summary: Creating summary for step {step}")
         if not results:
             return
         
         # Check if we already have a summary for this step
-        existing_steps = [s.step for s in self.step_summaries]
-        if step in existing_steps:
-            print(f"[DEBUG] _create_step_summary: Step {step} already exists in summaries, skipping duplicate")
-            return
+        existing_summary = None
+        existing_index = None
+        for i, summary in enumerate(self.step_summaries):
+            if summary.step == step:
+                existing_summary = summary
+                existing_index = i
+                print(f"[DEBUG] _create_step_summary: Found existing summary for step {step}")
+                break
         
-        # Overall accuracy
-        correct = sum(1 for r in results if r.is_correct)
-        total = len(results)
-        overall_accuracy = correct / total if total > 0 else 0.0
+        if existing_summary:
+            # Update existing summary by merging with new results
+            print(f"[DEBUG] _create_step_summary: Updating existing summary for step {step}")
+            
+            # Get all results for this step from history
+            all_step_results = [r for r in self.benchmark_history if r.step == step]
+            print(f"[DEBUG] _create_step_summary: Found {len(all_step_results)} total results for step {step}")
+            
+            # Recalculate overall accuracy
+            correct = sum(1 for r in all_step_results if r.is_correct)
+            total = len(all_step_results)
+            overall_accuracy = correct / total if total > 0 else 0.0
+            
+            # Recalculate per-benchmark accuracy
+            benchmark_accuracies = defaultdict(lambda: {'correct': 0, 'total': 0})
+            for result in all_step_results:
+                benchmark_accuracies[result.benchmark_name]['total'] += 1
+                if result.is_correct:
+                    benchmark_accuracies[result.benchmark_name]['correct'] += 1
+            
+            # Convert to final format
+            final_accuracies = {}
+            for benchmark, stats in benchmark_accuracies.items():
+                final_accuracies[benchmark] = stats['correct'] / stats['total'] if stats['total'] > 0 else 0.0
+            
+            # Update the existing summary
+            self.step_summaries[existing_index] = StepSummary(
+                step=step,
+                timestamp=timestamp,  # Use latest timestamp
+                overall_accuracy=overall_accuracy,
+                benchmark_accuracies=final_accuracies,
+                total_questions=total,
+                correct_questions=correct
+            )
+            
+            print(f"[DEBUG] _create_step_summary: Updated summary for step {step}")
+            print(f"[DEBUG] _create_step_summary: Step {step} now has {len(final_accuracies)} benchmarks: {list(final_accuracies.keys())}")
+            
+        else:
+            # Create new summary
+            print(f"[DEBUG] _create_step_summary: Creating new summary for step {step}")
+            
+            # Overall accuracy
+            correct = sum(1 for r in results if r.is_correct)
+            total = len(results)
+            overall_accuracy = correct / total if total > 0 else 0.0
+            
+            # Per-benchmark accuracy
+            benchmark_accuracies = defaultdict(lambda: {'correct': 0, 'total': 0})
+            for result in results:
+                benchmark_accuracies[result.benchmark_name]['total'] += 1
+                if result.is_correct:
+                    benchmark_accuracies[result.benchmark_name]['correct'] += 1
+            
+            # Convert to final format
+            final_accuracies = {}
+            for benchmark, stats in benchmark_accuracies.items():
+                final_accuracies[benchmark] = stats['correct'] / stats['total'] if stats['total'] > 0 else 0.0
+            
+            summary = StepSummary(
+                step=step,
+                timestamp=timestamp,
+                overall_accuracy=overall_accuracy,
+                benchmark_accuracies=final_accuracies,
+                total_questions=total,
+                correct_questions=correct
+            )
+            
+            self.step_summaries.append(summary)
+            print(f"[DEBUG] _create_step_summary: Added new summary for step {step}, total summaries now: {len(self.step_summaries)}")
         
-        # Per-benchmark accuracy
-        benchmark_accuracies = defaultdict(lambda: {'correct': 0, 'total': 0})
-        for result in results:
-            benchmark_accuracies[result.benchmark_name]['total'] += 1
-            if result.is_correct:
-                benchmark_accuracies[result.benchmark_name]['correct'] += 1
-        
-        # Convert to final format
-        final_accuracies = {}
-        for benchmark, stats in benchmark_accuracies.items():
-            final_accuracies[benchmark] = stats['correct'] / stats['total'] if stats['total'] > 0 else 0.0
-        
-        summary = StepSummary(
-            step=step,
-            timestamp=timestamp,
-            overall_accuracy=overall_accuracy,
-            benchmark_accuracies=final_accuracies,
-            total_questions=total,
-            correct_questions=correct
-        )
-        
-        self.step_summaries.append(summary)
-        print(f"[DEBUG] _create_step_summary: Added summary for step {step}, total summaries now: {len(self.step_summaries)}")
-        
-        # Check if we have duplicate steps
-        steps_count = {}
+        # Debug current step's benchmarks
+        current_summary = None
         for s in self.step_summaries:
-            steps_count[s.step] = steps_count.get(s.step, 0) + 1
-        duplicates = {step: count for step, count in steps_count.items() if count > 1}
-        if duplicates:
-            print(f"[DEBUG] _create_step_summary: WARNING - Duplicate steps detected: {duplicates}")
-        
-        # Debug benchmark names in this summary
-        print(f"[DEBUG] _create_step_summary: Step {step} benchmarks: {list(summary.benchmark_accuracies.keys())}")
-        for bench_name, accuracy in summary.benchmark_accuracies.items():
-            print(f"[DEBUG] _create_step_summary:   {bench_name}: {accuracy:.3f}")
+            if s.step == step:
+                current_summary = s
+                break
+                
+        if current_summary:
+            print(f"[DEBUG] _create_step_summary: Step {step} final benchmarks: {list(current_summary.benchmark_accuracies.keys())}")
+            for bench_name, accuracy in current_summary.benchmark_accuracies.items():
+                print(f"[DEBUG] _create_step_summary:   {bench_name}: {accuracy:.3f}")
         
         print(f"[DEBUG] _create_step_summary: All steps in summaries: {[s.step for s in self.step_summaries]}")
     
@@ -483,10 +528,10 @@ class BenchmarkTracker:
                     for i, question_id in enumerate(examples, 1):
                         if question_id in self._question_history:
                             latest = self._question_history[question_id][-1]
-                            question_preview = latest.question[:100] + "..." if len(latest.question) > 100 else latest.question
+                            question_preview = latest.question
                             prompt_parts.append(f"{i}. **{question_id}**: {question_preview}")
-                            prompt_parts.append(f"   Model Answer: {latest.model_answer[:80]}...")
-                            prompt_parts.append(f"   Correct Answer: {latest.correct_answer[:80]}...")
+                            prompt_parts.append(f"   Model Answer: {latest.model_answer}...")
+                            prompt_parts.append(f"   Correct Answer: {latest.correct_answer}...")
                             prompt_parts.append("")
             
             if problematic_questions.get('got_worse'):
