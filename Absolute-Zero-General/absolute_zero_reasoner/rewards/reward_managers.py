@@ -1730,25 +1730,22 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 valid_response_length = data_dict['valid_response_length']
                 
                 if self.split == 'train':
-                    if llm_scores[i] > 0.5:  # Consider scores > 0.5 as correct
-                        reward_tensor[i, valid_response_length - 1] = llm_scores[i]
-                        valid_data.append({
-                            'question': data_dict.get('question', ''),
-                            'answer': data_dict.get('answer', ''),
-                            'thought': data_dict.get('thought', ''),
-                            'uid': data_dict['uid'],
-                        })
-                    else:
-                        reward_tensor[i, valid_response_length - 1] = llm_scores[i]
+                    reward_tensor[i, valid_response_length - 1] = llm_scores[i]
+                    valid_data.append({
+                        'question': data_dict.get('question', ''),
+                        'answer': data_dict.get('answer', ''),
+                        'thought': data_dict.get('thought', ''),
+                        'uid': data_dict['uid'],
+                    })
                 elif self.split == 'test':
                     reward_tensor[i, valid_response_length - 1] = llm_scores[i]
-                    if llm_scores[i] > 0.5:
-                        valid_data.append({
-                            'question': data_dict.get('question', ''),
-                            'answer': data_dict.get('answer', ''),
-                            'thought': data_dict.get('thought', ''),
-                            'uid': data_dict['uid'],
-                        })
+                    # test split pairs not saved
+                    # valid_data.append({
+                    #     'question': data_dict.get('question', ''),
+                    #     'answer': data_dict.get('answer', ''),
+                    #     'thought': data_dict.get('thought', ''),
+                    #     'uid': data_dict['uid'],
+                    # })
                 
                 all_scores['llm_judge_score'].append(llm_scores[i])
             

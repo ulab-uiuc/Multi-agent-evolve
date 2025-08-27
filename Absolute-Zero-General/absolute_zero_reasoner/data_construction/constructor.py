@@ -30,9 +30,17 @@ def get_gen_general_io_data(
     tokenizer,  # 不强依赖类型声明，避免导入问题
     weights: List[float] = None,
     include_references: bool = True,
+    prompt_manager = None,  # Add prompt manager parameter
 ):
     return_io_data = []
-    instruction_template = '{}'
+    
+    # Use dynamic prompt if prompt_manager is available
+    if prompt_manager:
+        instruction_template = prompt_manager.get_proposer_instruction()
+        print(f"[DEBUG] get_gen_general_io_data: Using dynamic proposer instruction")
+    else:
+        instruction_template = '{}'
+        print(f"[DEBUG] get_gen_general_io_data: Using default instruction template")
 
     # 兜底：空数据直接写空表并返回
     if not io_data:
@@ -65,13 +73,21 @@ def get_gen_general_io_data(
             chosen_indices = np.random.choice(len(io_data), size=k, replace=False, p=probabilities)
             chosen_references = [io_data[i] for i in chosen_indices]
         if not chosen_references:
-            io_prompt = instruction_template.format(
-                get_general_generator_prompt(reference_questions=chosen_references)
-            )
+            if prompt_manager:
+                # Use enhanced proposer instruction with empty references
+                io_prompt = f"{instruction_template}\n\n{get_general_generator_prompt(reference_questions=chosen_references)}"
+            else:
+                io_prompt = instruction_template.format(
+                    get_general_generator_prompt(reference_questions=chosen_references)
+                )
         else:
-            io_prompt = instruction_template.format(
-                get_general_generation_with_reference_prompt(reference_questions=chosen_references)
-            )
+            if prompt_manager:
+                # Use enhanced proposer instruction with references
+                io_prompt = f"{instruction_template}\n\n{get_general_generation_with_reference_prompt(reference_questions=chosen_references)}"
+            else:
+                io_prompt = instruction_template.format(
+                    get_general_generation_with_reference_prompt(reference_questions=chosen_references)
+                )
         # 提取 question
         # question = extract_question(io_prompt.split('### Your Task:')[1].strip())
         question = io_prompt
@@ -114,16 +130,29 @@ def get_pred_general_io_data(
     output_path: str,
     split: str,
     tokenizer: AutoTokenizer,
+    prompt_manager = None,  # Add prompt manager parameter
 ):
     return_io_data = []
-    instruction_template = '{}'
+    
+    # Use dynamic prompt if prompt_manager is available
+    if prompt_manager:
+        instruction_template = prompt_manager.get_solver_instruction("{}")
+        print(f"[DEBUG] get_pred_general_io_data: Using dynamic solver instruction")
+    else:
+        instruction_template = '{}'
+        print(f"[DEBUG] get_pred_general_io_data: Using default instruction template")
 
     for idx, io_item in enumerate(io_data):
-        io_prompt = instruction_template.format(
-            get_general_predictor_prompt(
-                question=io_item['question'],
+        if prompt_manager:
+            # Use prompt manager to get enhanced solver instruction
+            io_prompt = prompt_manager.get_solver_instruction(io_item['question'])
+        else:
+            # Use traditional template approach
+            io_prompt = instruction_template.format(
+                get_general_predictor_prompt(
+                    question=io_item['question'],
+                )
             )
-        )
         print(f"Generated prompt: {io_prompt}")
         # since we have abundant judge data, we can afford to filter out some data
         if len(tokenizer(io_prompt)['input_ids']) <= content_max_length:
@@ -192,7 +221,7 @@ def get_judge_general_io_data(
                 "ability": "general",
                 "reward_model": {
                     "style": "rule",
-                    "ground_truth": io_item['reward_model']['ground_truth'],
+                    "ground_truth": io_item.get('answer', ''),
                 },
                 "extra_info": {
                     'split': split,
