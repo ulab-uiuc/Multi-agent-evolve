@@ -738,12 +738,18 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     tokenizer = self.trainer.tokenizer
                     inputs = tokenizer(prompt_text, return_tensors="pt", truncation=True, max_length=1024)
                     
-                    # Create DataProto batch for the actor rollout worker group
+                    # Get tensor model parallel size to ensure proper batching
+                    tensor_parallel_size = getattr(self.trainer.config.actor_rollout_ref.rollout, 'tensor_model_parallel_size', 1)
+                    
+                    # Duplicate the input to match tensor parallel size for proper chunking
+                    # This ensures DataProto.chunk() can divide evenly
                     batch_dict = {
-                        'input_ids': inputs['input_ids'],
-                        'attention_mask': inputs['attention_mask'],
-                        'position_ids': torch.arange(inputs['input_ids'].shape[1]).unsqueeze(0)
+                        'input_ids': inputs['input_ids'].repeat(tensor_parallel_size, 1),
+                        'attention_mask': inputs['attention_mask'].repeat(tensor_parallel_size, 1),
+                        'position_ids': torch.arange(inputs['input_ids'].shape[1]).unsqueeze(0).repeat(tensor_parallel_size, 1)
                     }
+                    
+                    print(f"[DEBUG] ActorModelInterface: Created batch with size {batch_dict['input_ids'].shape[0]} for {tensor_parallel_size} tensor parallel workers")
                     
                     # Convert to DataProto
                     gen_batch = DataProto.from_single_dict(batch_dict)
@@ -752,7 +758,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     with torch.no_grad():
                         gen_output = self.trainer.actor_rollout_wg.generate_sequences(gen_batch)
                     
-                    # Extract generated text
+                    # Extract generated text (take the first result since all inputs are identical)
                     if 'responses' in gen_output.batch:
                         response_ids = gen_output.batch['responses'][0]  # Take first response
                         response_text = tokenizer.decode(response_ids, skip_special_tokens=True)
