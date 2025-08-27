@@ -1,11 +1,11 @@
 # Experiment configuration
-experiment_timestamp: "${now:%Y-%m-%d_%H-%M-%S}"
-experiment_base_dir: "./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${trainer.project_name}_${trainer.experiment_name}"
+experiment_timestamp: null  # Will be set dynamically at runtime
+experiment_base_dir: null    # Will be set dynamically at runtime
 
 # Benchmark tracking configuration
 track_benchmarks: true
-benchmark_tracking_dir: "${experiment_base_dir}/benchmark_tracking"
-prompt_optimization_dir: "${experiment_base_dir}/prompt_optimization"
+benchmark_tracking_dir: null  # Will be set dynamically at runtime
+prompt_optimization_dir: null # Will be set dynamically at runtime
 
 data:
   tokenizer: null
@@ -101,7 +101,7 @@ actor_rollout_ref:
     n: 1 # > 1 for grpo
 
 trainer:
-  output_dir: "${experiment_base_dir}"
+  output_dir: null  # Will be set dynamically at runtime
   save_freq: 10
   log_freq: 1
   eval_freq: 5
@@ -125,7 +125,7 @@ trainer:
   default_hdfs_dir: null
   remove_previous_ckpt_in_save: False
   del_local_ckpt_after_load: False
-  default_local_dir: /data/yidingw/checkpoints/general/${now:%Y-%m-%d}/${now:%H-%M-%S}_${trainer.project_name}_${trainer.experiment_name}
+  default_local_dir: null  # Will be set dynamically at runtime
 
 
 critic:
@@ -190,11 +190,11 @@ azr:
     accuracy_threshold: 0.2  # 准确率低于20%时触发优化
     max_improvements_per_step: 3
     enable_safety_validation: true
-    output_dir: ${prompt_optimization_dir}
+    output_dir: null  # Will be set dynamically at runtime
   
   # Benchmark tracking settings
   benchmark_tracking:
-    output_dir: ${benchmark_tracking_dir}
+    output_dir: null  # Will be set dynamically at runtime
     enable: true
   
   # Benchmark evaluation settings for general tasks

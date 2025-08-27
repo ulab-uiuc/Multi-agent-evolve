@@ -43,6 +43,42 @@ def run_ppo(config, compute_score=None):
 
 @ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
 def main_task(config, compute_score=None):
+    # Set up dynamic timestamp and directories before resolving config
+    from datetime import datetime
+    import os
+    
+    # Generate timestamp
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    date_part = datetime.now().strftime("%Y-%m-%d")
+    time_part = datetime.now().strftime("%H-%M-%S")
+    
+    # Set timestamp
+    config.experiment_timestamp = timestamp
+    
+    # Create base experiment directory
+    experiment_base_dir = f"./outputs/{date_part}/{time_part}_{config.trainer.project_name}_{config.trainer.experiment_name}"
+    config.experiment_base_dir = experiment_base_dir
+    
+    # Set other directories
+    config.trainer.output_dir = experiment_base_dir
+    config.benchmark_tracking_dir = f"{experiment_base_dir}/benchmark_tracking"
+    config.prompt_optimization_dir = f"{experiment_base_dir}/prompt_optimization"
+    
+    # Set checkpoint directory
+    config.trainer.default_local_dir = f"/data/yidingw/checkpoints/general/{date_part}/{time_part}_{config.trainer.project_name}_{config.trainer.experiment_name}"
+    
+    # Set output directories for prompt optimization and benchmark tracking
+    if hasattr(config, 'reward_fn') and hasattr(config.reward_fn, 'prompt_optimization'):
+        config.reward_fn.prompt_optimization.output_dir = config.prompt_optimization_dir
+    if hasattr(config, 'reward_fn') and hasattr(config.reward_fn, 'benchmark_tracking'):
+        config.reward_fn.benchmark_tracking.output_dir = config.benchmark_tracking_dir
+    
+    # Create directories if they don't exist
+    os.makedirs(experiment_base_dir, exist_ok=True)
+    os.makedirs(config.benchmark_tracking_dir, exist_ok=True)
+    os.makedirs(config.prompt_optimization_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(config.trainer.default_local_dir), exist_ok=True)
+    
     pprint(OmegaConf.to_container(config, resolve=True))  # resolve=True will eval symbol values
     OmegaConf.resolve(config)
 
