@@ -28,6 +28,8 @@ from verl.trainer.ppo.ray_trainer import (
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto, DataProto
 
 from absolute_zero_reasoner.utils.tracking import ReasonRLTracking
+from absolute_zero_reasoner.utils.prompt_manager import PromptManager
+from absolute_zero_reasoner.utils.actor_prompt_optimizer import ActorPromptOptimizer, SafePromptUpdater
 from absolute_zero_reasoner.data_construction.constructor import get_gen_code_io_data, get_pred_code_io_data, get_gen_general_io_data, get_pred_general_io_data, get_judge_general_io_data
 from absolute_zero_reasoner.trainer.ppo.reason_rl_ray_trainer import ReasonRLRayPPOTrainer
 from absolute_zero_reasoner.utils.dataset.rl_dataset import RLHFDataset
@@ -699,6 +701,73 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         self._last_cleanup_step = 0
         self._cleanup_frequency = self.config.azr.get('executor_cleanup_frequency', 5)
         self.benchmark_reward_fn = benchmark_reward_fn
+        
+        # Initialize prompt manager for dynamic prompt improvements
+        self.prompt_manager = PromptManager(
+            config=self.config,
+            output_dir=self.config.trainer.default_local_dir + "/prompt_history"
+        )
+        
+        # Initialize actor-driven prompt optimizer
+        self.enable_actor_optimization = getattr(self.config.azr, 'enable_actor_prompt_optimization', False)
+        if self.enable_actor_optimization:
+            self.actor_prompt_optimizer = ActorPromptOptimizer(
+                model_interface=self._create_model_interface(),
+                prompt_manager=self.prompt_manager,
+                output_dir=self.config.trainer.default_local_dir + "/actor_prompt_optimization"
+            )
+            self.safe_prompt_updater = SafePromptUpdater(self.prompt_manager)
+            print(f"[DEBUG] GeneralIORayPPOTrainer: Initialized with actor prompt optimization ENABLED")
+        else:
+            self.actor_prompt_optimizer = None
+            self.safe_prompt_updater = None
+            print(f"[DEBUG] GeneralIORayPPOTrainer: Actor prompt optimization DISABLED")
+            
+        print(f"[DEBUG] GeneralIORayPPOTrainer: Initialized with prompt manager")
+    
+    def _create_model_interface(self):
+        """Create a model interface for prompt optimization"""
+        class ActorModelInterface:
+            def __init__(self, trainer):
+                self.trainer = trainer
+                
+            def generate(self, prompt_text: str, max_length: int = 1024) -> str:
+                """Generate text using the actor rollout worker group"""
+                try:
+                    # Tokenize input
+                    tokenizer = self.trainer.tokenizer
+                    inputs = tokenizer(prompt_text, return_tensors="pt", truncation=True, max_length=1024)
+                    
+                    # Create DataProto batch for the actor rollout worker group
+                    batch_dict = {
+                        'input_ids': inputs['input_ids'],
+                        'attention_mask': inputs['attention_mask'],
+                        'position_ids': torch.arange(inputs['input_ids'].shape[1]).unsqueeze(0)
+                    }
+                    
+                    # Convert to DataProto
+                    gen_batch = DataProto.from_single_dict(batch_dict)
+                    
+                    # Generate using actor_rollout_wg
+                    with torch.no_grad():
+                        gen_output = self.trainer.actor_rollout_wg.generate_sequences(gen_batch)
+                    
+                    # Extract generated text
+                    if 'responses' in gen_output.batch:
+                        response_ids = gen_output.batch['responses'][0]  # Take first response
+                        response_text = tokenizer.decode(response_ids, skip_special_tokens=True)
+                        return response_text.strip()
+                    else:
+                        print("[DEBUG] ActorModelInterface: No 'responses' in generation output")
+                        return ""
+                    
+                except Exception as e:
+                    print(f"[DEBUG] ActorModelInterface: Generation error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return ""
+        
+        return ActorModelInterface(self)
     
     def cleanup(self):
         gc.collect()
@@ -769,6 +838,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             tokenizer=self.tokenizer, 
             weights=weights,
             include_references=self.config.azr.reward.generation_reward_config.include_references,
+            prompt_manager=self.prompt_manager,  # Pass prompt manager
         )
 
         gen_train_dataset = RLHFDataset(
@@ -850,6 +920,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             output_path=parquet_path,
             split='train',
             tokenizer=self.tokenizer,
+            prompt_manager=self.prompt_manager,  # Pass prompt manager
         )
 
         general_pred_train_dataset = RLHFDataset(parquet_files=parquet_path,
@@ -1367,6 +1438,86 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                                     [[k, v] for k, v in val_metrics.items()],
                                     title=f"{evaluation_type} Results"
                                 )
+                                
+                                # Apply prompt improvements if benchmark tracker generated them
+                                if hasattr(self, 'prompt_manager') and hasattr(self, 'benchmark_tracker'):
+                                    try:
+                                        # Get improvement prompts from benchmark tracker
+                                        improvement_prompts = self.benchmark_tracker.generate_improvement_prompts(self.global_steps)
+                                        
+                                        if improvement_prompts:
+                                            PrettyPrinter.section_header("Applying Prompt Improvements")
+                                            
+                                            # Get performance context
+                                            analysis_report = self.benchmark_tracker.generate_analysis_report(self.global_steps)
+                                            performance_context = f"Step {self.global_steps}: "
+                                            if analysis_report and "Current overall accuracy:" in analysis_report:
+                                                accuracy_lines = [line for line in analysis_report.split('\n') 
+                                                                if 'Current overall accuracy:' in line]
+                                                if accuracy_lines:
+                                                    performance_context += accuracy_lines[0].strip()
+                                            
+                                            # Use actor-driven optimization if enabled
+                                            if self.enable_actor_optimization and self.actor_prompt_optimizer:
+                                                PrettyPrinter.status("ACTOR OPTIMIZATION", "Using actor model to optimize prompts", "info")
+                                                
+                                                # Get problematic questions and performance trends
+                                                problematic_questions = self.benchmark_tracker.find_problematic_questions()
+                                                performance_trends = self.benchmark_tracker.analyze_performance_trends()
+                                                
+                                                # Let actor model optimize prompts
+                                                optimized_prompts = self.actor_prompt_optimizer.optimize_prompts_from_analysis(
+                                                    benchmark_analysis=analysis_report,
+                                                    problematic_questions=problematic_questions,
+                                                    performance_trends=performance_trends,
+                                                    step=self.global_steps
+                                                )
+                                                
+                                                # Apply optimized prompts safely
+                                                if optimized_prompts:
+                                                    self.safe_prompt_updater.update_prompts_safely(
+                                                        optimized_prompts=optimized_prompts,
+                                                        step=self.global_steps,
+                                                        performance_context=performance_context
+                                                    )
+                                                    
+                                                    PrettyPrinter.status("ACTOR OPTIMIZATION", 
+                                                                       f"Applied {len(optimized_prompts)} actor-optimized prompts", 
+                                                                       "success")
+                                                    
+                                                    for prompt_type in optimized_prompts:
+                                                        PrettyPrinter.status("  Actor Update", 
+                                                                           f"{prompt_type}: Template updated by actor model", 
+                                                                           "info")
+                                                else:
+                                                    PrettyPrinter.status("ACTOR OPTIMIZATION", 
+                                                                       "No valid optimizations generated", 
+                                                                       "warn")
+                                            else:
+                                                # Fallback to rule-based improvements
+                                                PrettyPrinter.status("RULE-BASED", "Using rule-based prompt improvements", "info")
+                                                
+                                                # Apply improvements to prompt manager
+                                                self.prompt_manager.update_prompts_from_analysis(
+                                                    improvement_prompts=improvement_prompts,
+                                                    performance_context=performance_context,
+                                                    step=self.global_steps
+                                                )
+                                                
+                                                # Log status
+                                                prompt_status = self.prompt_manager.get_prompt_status()
+                                                for prompt_type, status in prompt_status.items():
+                                                    if status['improvements_count'] > 0:
+                                                        PrettyPrinter.status("PROMPT UPDATE", 
+                                                                           f"{prompt_type}: {status['improvements_count']} improvements", 
+                                                                           "success")
+                                                        for imp in status['current_improvements'][-3:]:  # Show last 3
+                                                            PrettyPrinter.status("  Recent", imp[:100] + "...", "info")
+                                        
+                                    except Exception as e:
+                                        PrettyPrinter.status("PROMPT UPDATE", f"Error applying improvements: {e}", "error")
+                                        import traceback
+                                        traceback.print_exc()
                         metrics.update(val_metrics)
 
                     # print the statistics of the number of questions in the dataset

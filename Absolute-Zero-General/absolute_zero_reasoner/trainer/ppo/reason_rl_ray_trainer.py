@@ -17,6 +17,7 @@ from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from verl.trainer.ppo.ray_trainer import Role, WorkerType, ResourcePoolManager
 
 from absolute_zero_reasoner.utils.dataset.rl_dataset import RLHFDataset
+from absolute_zero_reasoner.utils.benchmark_tracker import BenchmarkTracker
 
 
 def compute_dr_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
@@ -203,6 +204,28 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         self.benchmark_dataloader = None
         if self._is_general_task():
             self._setup_benchmark_evaluation()
+        
+        # Initialize benchmark tracker for validation tracking
+        self.benchmark_tracker = None
+        if config.get('track_benchmarks', False):
+            # Try to get output_dir from various config locations
+            tracker_output_dir = None
+            if hasattr(config, 'benchmark_tracker') and hasattr(config.benchmark_tracker, 'output_dir'):
+                tracker_output_dir = config.benchmark_tracker.output_dir
+            elif hasattr(config, 'trainer') and hasattr(config.trainer, 'output_dir'):
+                tracker_output_dir = config.trainer.output_dir
+            else:
+                # Fallback to default directory
+                tracker_output_dir = "./outputs/benchmark_tracking"
+            
+            print(f"[DEBUG] Initializing BenchmarkTracker with output_dir: {tracker_output_dir}")
+            self.benchmark_tracker = BenchmarkTracker(
+                output_dir=tracker_output_dir,
+                config=config
+            )
+            print(f"[DEBUG] BenchmarkTracker initialized successfully")
+        else:
+            print(f"[DEBUG] BenchmarkTracker disabled (track_benchmarks={config.get('track_benchmarks', False)})")
 
     def fit(self):
         """
@@ -409,23 +432,31 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                         metrics.update(actor_output_metrics)
 
                     # validate
+                    print(f"[DEBUG] Checking validation conditions: test_freq={self.config.trainer.test_freq}, global_steps={self.global_steps}, should_validate={self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0}")
                     if self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0:
+                        print(f"[DEBUG] Starting validation at step {self.global_steps}")
                         with _timer('testing', timing_raw):
-                            if self._is_general_task():
+                            is_general = self._is_general_task()
+                            print(f"[DEBUG] Is general task: {is_general}")
+                            if is_general:
                                 # For general tasks, only run benchmark evaluation
+                                print(f"[DEBUG] benchmark_reward_fn is None: {self.benchmark_reward_fn is None}")
                                 if self.benchmark_reward_fn is not None:
                                     pp.section_header(f"Benchmark Evaluation (Step {self.global_steps})")
                                     pp.status("Benchmark", "Running benchmark evaluation", "info")
                                     val_metrics: dict = self._run_benchmark_evaluation()
                                 else:
+                                    print(f"[DEBUG] Skipping benchmark evaluation - no benchmark_reward_fn")
                                     val_metrics = {}
                             else:
                                 # For other tasks, run standard validation
+                                print(f"[DEBUG] val_reward_fn is None: {self.val_reward_fn is None}")
                                 if self.val_reward_fn is not None:
                                     pp.section_header(f"Validation (Step {self.global_steps})")
                                     pp.status("Validation", "Running validation", "info")
                                     val_metrics: dict = self._validate()
                                 else:
+                                    print(f"[DEBUG] Skipping standard validation - no val_reward_fn")
                                     val_metrics = {}
 
                             # Convert metrics to table format
@@ -434,9 +465,11 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                                 for k, v in val_metrics.items():
                                     val_metrics_table.append([k, f"{v:.4f}" if isinstance(v, float) else v])
 
-                                evaluation_type = "Benchmark" if self._is_general_task() else "Validation"
+                                evaluation_type = "Benchmark" if is_general else "Validation"
                                 pp.table(["Metric", "Value"], val_metrics_table, f"{evaluation_type} Results (Step {self.global_steps})")
                         metrics.update(val_metrics)
+                    else:
+                        print(f"[DEBUG] Skipping validation - conditions not met")
 
                     if self.config.trainer.save_freq > 0 and \
                             self.global_steps % self.config.trainer.save_freq == 0:
@@ -521,6 +554,14 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
 
         all_eval_metrics = defaultdict(list)
 
+        # Data for benchmark tracking
+        benchmark_results = {}
+        all_questions = []
+        all_model_answers = []
+        all_ground_truths = []
+        all_data_sources = []
+        all_scores = []
+
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -561,6 +602,65 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
 
+            # Collect benchmark tracking data if tracker is enabled
+            if self.benchmark_tracker is not None:
+                print(f"[DEBUG] BenchmarkTracker: Collecting data from {len(test_batch)} test items")
+                for i, data_item in enumerate(test_batch):
+                    question = ""
+                    ground_truth = ""
+                    data_source = data_item.non_tensor_batch.get('data_source', 'unknown')
+                    
+                    # Extract question and ground truth based on data structure
+                    if 'prompt' in data_item.non_tensor_batch:
+                        prompt_data = data_item.non_tensor_batch['prompt']
+                        
+                        # Handle numpy array case - convert to python list
+                        if hasattr(prompt_data, 'tolist'):
+                            prompt_data = prompt_data.tolist()
+                        elif hasattr(prompt_data, 'item'):
+                            prompt_data = prompt_data.item()
+                        
+                        if isinstance(prompt_data, list) and len(prompt_data) > 0:
+                            first_prompt = prompt_data[0]
+                            # Handle nested numpy array case
+                            if hasattr(first_prompt, 'tolist'):
+                                first_prompt = first_prompt.tolist()
+                            elif hasattr(first_prompt, 'item'):
+                                first_prompt = first_prompt.item()
+                            
+                            if isinstance(first_prompt, dict):
+                                question = first_prompt.get('content', '')
+                            else:
+                                question = str(first_prompt) if first_prompt else ''
+                            
+                            # Debug: Add detailed logging for prompt extraction
+                            if i < 3:  # Show debug info for first 3 items
+                                print(f"[DEBUG] _validate Item {i} prompt_data type: {type(data_item.non_tensor_batch['prompt'])}")
+                                print(f"[DEBUG] _validate Item {i} converted prompt_data type: {type(prompt_data)}")
+                                print(f"[DEBUG] _validate Item {i} prompt_data length: {len(prompt_data) if isinstance(prompt_data, list) else 'not a list'}")
+                                print(f"[DEBUG] _validate Item {i} first prompt type: {type(first_prompt)}")
+                                print(f"[DEBUG] _validate Item {i} first prompt: {first_prompt}")
+                                print(f"[DEBUG] _validate Item {i} extracted question length: {len(question)}")
+                    else:
+                        if i < 3:
+                            print(f"[DEBUG] _validate Item {i} no 'prompt' key found in non_tensor_batch")
+                    
+                    if 'answer' in data_item.non_tensor_batch:
+                        ground_truth = data_item.non_tensor_batch['answer']
+                    elif 'reward_model' in data_item.non_tensor_batch:
+                        ground_truth = data_item.non_tensor_batch['reward_model'].get('ground_truth', '')
+                    
+                    model_answer = output_texts[i] if i < len(output_texts) else ""
+                    
+                    # Debug output for first few items
+                    if i < 3:  # Show debug info for first 3 items
+                        print(f"[DEBUG] Item {i}: source={data_source}, question_len={len(question)}, ground_truth_len={len(ground_truth)}, answer_len={len(model_answer)}")
+                    
+                    all_questions.append(question)
+                    all_model_answers.append(model_answer)
+                    all_ground_truths.append(ground_truth)
+                    all_data_sources.append(data_source)
+
             # evaluate using reward_function
             reward_tensor, eval_metrics = self.val_reward_fn(test_batch)
             for k, v in eval_metrics.items():
@@ -569,6 +669,10 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
             # Store scores
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
+            
+            # Extend benchmark tracking data
+            if self.benchmark_tracker is not None:
+                all_scores.extend(scores)
 
             reward_tensor_lst.append(reward_tensor)
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
@@ -592,6 +696,75 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
 
         for k, v in all_eval_metrics.items():
             metric_dict[k] = np.mean(v)
+
+        # Record benchmark results and generate analysis if tracker is enabled
+        if self.benchmark_tracker is not None and len(all_questions) > 0:
+            print(f"[DEBUG] BenchmarkTracker: Recording results for {len(all_questions)} items at step {self.global_steps}")
+            
+            # Group data by benchmark
+            benchmark_data = defaultdict(list)
+            for i in range(len(all_questions)):
+                benchmark_name = all_data_sources[i]
+                benchmark_data[benchmark_name].append({
+                    'question': all_questions[i],
+                    'model_answer': all_model_answers[i],
+                    'ground_truth': all_ground_truths[i],
+                    'score': all_scores[i],
+                    'is_correct': all_scores[i] > 0.5  # Threshold for correctness
+                })
+            
+            print(f"[DEBUG] BenchmarkTracker: Found {len(benchmark_data)} unique benchmarks: {list(benchmark_data.keys())}")
+            
+            # Record results for each benchmark
+            for benchmark_name, data_list in benchmark_data.items():
+                questions = [item['question'] for item in data_list]
+                model_answers = [item['model_answer'] for item in data_list]
+                ground_truths = [item['ground_truth'] for item in data_list]
+                scores = [item['score'] for item in data_list]
+                is_correct = [item['is_correct'] for item in data_list]
+                
+                accuracy = np.mean(is_correct) if is_correct else 0.0
+                
+                print(f"[DEBUG] BenchmarkTracker: Recording {benchmark_name}: {len(data_list)} items, accuracy={accuracy:.3f}")
+                
+                self.benchmark_tracker.record_validation_results(
+                    step=self.global_steps,
+                    benchmark_name=benchmark_name,
+                    questions=questions,
+                    model_answers=model_answers,
+                    ground_truths=ground_truths,
+                    scores=scores,
+                    accuracy=accuracy
+                )
+            
+            # Generate analysis and improvement suggestions (skip first validation)
+            if self.global_steps > 0:
+                print(f"[DEBUG] BenchmarkTracker: Generating analysis report for step {self.global_steps}")
+                analysis_report = self.benchmark_tracker.generate_analysis_report(self.global_steps)
+                improvement_prompts = self.benchmark_tracker.generate_improvement_prompts(self.global_steps)
+                
+                print(f"[DEBUG] BenchmarkTracker: Analysis report length: {len(analysis_report) if analysis_report else 0}")
+                print(f"[DEBUG] BenchmarkTracker: Generated {len(improvement_prompts)} improvement prompts: {list(improvement_prompts.keys()) if improvement_prompts else []}")
+                
+                # Log analysis and suggestions
+                from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter as pp
+                if analysis_report:
+                    pp.section_header("Benchmark Performance Analysis")
+                    pp.code_block(analysis_report)
+                
+                if improvement_prompts:
+                    pp.section_header("Improvement Suggestions")
+                    for prompt_type, prompt_content in improvement_prompts.items():
+                        pp.status(f"{prompt_type.title()} Improvement", prompt_content, "info")
+                
+                # Save analysis to files
+                print(f"[DEBUG] BenchmarkTracker: Saving analysis to files")
+                self.benchmark_tracker.save_analysis_to_files(self.global_steps, analysis_report, improvement_prompts)
+                print(f"[DEBUG] BenchmarkTracker: Analysis files saved successfully")
+        elif self.benchmark_tracker is not None:
+            print(f"[DEBUG] BenchmarkTracker: No questions collected, skipping analysis")
+        else:
+            print(f"[DEBUG] BenchmarkTracker: Tracker not initialized, skipping benchmark tracking")
 
         # Run benchmark evaluation if available for general tasks - but not here since we handle it separately
         # if self._is_general_task() and self.benchmark_reward_fn is not None:
@@ -674,7 +847,14 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
 
     def _is_general_task(self) -> bool:
         """Check if the current task is a general task that should use benchmark evaluation."""
-        task_type = self.config.get('azr.task_type', '')
+        # Try different ways to access the task type
+        task_type = ""
+        if hasattr(self.config, 'azr') and hasattr(self.config.azr, 'task_type'):
+            task_type = self.config.azr.task_type
+        else:
+            task_type = self.config.get('azr', {}).get('task_type', '')
+        
+        print(f"[DEBUG] _is_general_task: task_type = '{task_type}'")
         return task_type.lower() == 'general'
     
     def _setup_benchmark_evaluation(self):
@@ -742,14 +922,16 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                     
                     # Apply per-benchmark sampling limit
                     if max_samples_per_benchmark and benchmark_size > max_samples_per_benchmark:
-                        # Create subset with limited samples
-                        indices = torch.randperm(benchmark_size)[:max_samples_per_benchmark]
+                        # Create subset with limited samples - Use fixed seed for reproducible question selection
+                        generator = torch.Generator()
+                        generator.manual_seed(42)  # Fixed seed ensures same questions every time
+                        indices = torch.randperm(benchmark_size, generator=generator)[:max_samples_per_benchmark]
                         # Convert to python integers to avoid pandas indexing issues
                         indices = indices.tolist()
                         limited_dataset = torch.utils.data.Subset(single_benchmark_dataset, indices)
                         benchmark_datasets.append(limited_dataset)
                         actual_size = max_samples_per_benchmark
-                        print(f"  {benchmark_name}: {actual_size}/{benchmark_size} samples (limited)")
+                        print(f"  {benchmark_name}: {actual_size}/{benchmark_size} samples (limited, fixed seed=42)")
                     else:
                         benchmark_datasets.append(single_benchmark_dataset)
                         actual_size = benchmark_size
@@ -775,6 +957,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                 )
                 
                 print(f"Benchmark evaluation setup complete. Dataset size: {len(benchmark_dataset)}")
+                print(f"[DEBUG] Fixed seed used for question selection to ensure consistency across evaluations")
             else:
                 print("Warning: No benchmark datasets loaded successfully")
                 self.benchmark_reward_fn = None
@@ -798,17 +981,29 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter as pp
         
         pp.section_header("Running Benchmark Evaluation")
+        print(f"[DEBUG] _run_benchmark_evaluation: Starting evaluation at step {self.global_steps}")
         
         reward_tensor_lst = []
         all_metrics = defaultdict(list)
+        
+        # Data for benchmark tracking
+        all_questions = []
+        all_model_answers = []
+        all_ground_truths = []
+        all_data_sources = []
+        all_scores = []
         
         try:
             batch_count = 0
             for batch_data in self.benchmark_dataloader:
                 batch_count += 1
                 pp.status("BENCHMARK", f"Processing batch {batch_count}", "info")
+                print(f"[DEBUG] _run_benchmark_evaluation: Processing batch {batch_count} with {len(batch_data.get('input_ids', []))} items")
                 
                 batch = DataProto.from_single_dict(batch_data)
+                
+                # Store original batch data for tracking
+                original_batch = DataProto.from_single_dict(batch_data)
                 
                 # Generate responses
                 gen_batch = batch.pop(['input_ids', 'attention_mask', 'position_ids'])
@@ -828,8 +1023,77 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                 # Combine batch with generated outputs
                 batch = batch.union(output_gen_batch)
                 
+                # Store generated outputs for tracking
+                output_ids = batch.batch['responses']
+                output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
+                
+                # Collect benchmark tracking data if tracker is enabled
+                if self.benchmark_tracker is not None:
+                    print(f"[DEBUG] _run_benchmark_evaluation: Collecting tracking data from {len(batch)} items")
+                    for i, data_item in enumerate(batch):
+                        question = ""
+                        ground_truth = ""
+                        data_source = data_item.non_tensor_batch.get('data_source', 'benchmark_unknown')
+                        
+                        # Extract question and ground truth based on data structure
+                        if 'prompt' in data_item.non_tensor_batch:
+                            prompt_data = data_item.non_tensor_batch['prompt']
+                            
+                            # Handle numpy array case - convert to python list
+                            if hasattr(prompt_data, 'tolist'):
+                                prompt_data = prompt_data.tolist()
+                            elif hasattr(prompt_data, 'item'):
+                                prompt_data = prompt_data.item()
+                            
+                            if isinstance(prompt_data, list) and len(prompt_data) > 0:
+                                first_prompt = prompt_data[0]
+                                # Handle nested numpy array case
+                                if hasattr(first_prompt, 'tolist'):
+                                    first_prompt = first_prompt.tolist()
+                                elif hasattr(first_prompt, 'item'):
+                                    first_prompt = first_prompt.item()
+                                
+                                if isinstance(first_prompt, dict):
+                                    question = first_prompt.get('content', '')
+                                else:
+                                    question = str(first_prompt) if first_prompt else ''
+                                
+                                # Debug: Add detailed logging for prompt extraction
+                                if i < 2:  # Show debug info for first 2 items
+                                    print(f"[DEBUG] Item {i} prompt_data type: {type(data_item.non_tensor_batch['prompt'])}")
+                                    print(f"[DEBUG] Item {i} converted prompt_data type: {type(prompt_data)}")
+                                    print(f"[DEBUG] Item {i} prompt_data length: {len(prompt_data) if isinstance(prompt_data, list) else 'not a list'}")
+                                    print(f"[DEBUG] Item {i} first prompt type: {type(first_prompt)}")
+                                    print(f"[DEBUG] Item {i} first prompt: {first_prompt}")
+                                    print(f"[DEBUG] Item {i} extracted question length: {len(question)}")
+                        else:
+                            if i < 2:
+                                print(f"[DEBUG] Item {i} no 'prompt' key found in non_tensor_batch")
+                        
+                        if 'answer' in data_item.non_tensor_batch:
+                            ground_truth = data_item.non_tensor_batch['answer']
+                        elif 'reward_model' in data_item.non_tensor_batch:
+                            ground_truth = data_item.non_tensor_batch['reward_model'].get('ground_truth', '')
+                        
+                        model_answer = output_texts[i] if i < len(output_texts) else ""
+                        
+                        # Debug output for first few items
+                        if i < 2:  # Show debug info for first 2 items
+                            print(f"[DEBUG] _run_benchmark_evaluation Item {i}: source={data_source}, question_len={len(question)}, ground_truth_len={len(ground_truth)}, answer_len={len(model_answer)}")
+                        
+                        all_questions.append(question)
+                        all_model_answers.append(model_answer)
+                        all_ground_truths.append(ground_truth)
+                        all_data_sources.append(data_source)
+                
                 # Evaluate using benchmark reward manager
                 reward_tensor, metrics = self.benchmark_reward_fn(batch)
+                
+                # Store scores for tracking
+                scores = reward_tensor.sum(-1).cpu().tolist()
+                if self.benchmark_tracker is not None:
+                    all_scores.extend(scores)
+                    print(f"[DEBUG] _run_benchmark_evaluation: Collected {len(scores)} scores for tracking")
                 
                 reward_tensor_lst.append(reward_tensor)
                 for k, v in metrics.items():
@@ -838,6 +1102,74 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
             if batch_count == 0:
                 pp.status("BENCHMARK", "No batches found in benchmark dataloader", "warning")
                 return {}
+            
+            # Record benchmark results and generate analysis if tracker is enabled
+            if self.benchmark_tracker is not None and len(all_questions) > 0:
+                print(f"[DEBUG] _run_benchmark_evaluation: Recording results for {len(all_questions)} items at step {self.global_steps}")
+                
+                # Group data by benchmark
+                benchmark_data = defaultdict(list)
+                for i in range(len(all_questions)):
+                    benchmark_name = all_data_sources[i]
+                    benchmark_data[benchmark_name].append({
+                        'question': all_questions[i],
+                        'model_answer': all_model_answers[i],
+                        'ground_truth': all_ground_truths[i],
+                        'score': all_scores[i],
+                        'is_correct': all_scores[i] > 0.5  # Threshold for correctness
+                    })
+                
+                print(f"[DEBUG] _run_benchmark_evaluation: Found {len(benchmark_data)} unique benchmarks: {list(benchmark_data.keys())}")
+                
+                # Record results for each benchmark
+                for benchmark_name, data_list in benchmark_data.items():
+                    questions = [item['question'] for item in data_list]
+                    model_answers = [item['model_answer'] for item in data_list]
+                    ground_truths = [item['ground_truth'] for item in data_list]
+                    scores = [item['score'] for item in data_list]
+                    is_correct = [item['is_correct'] for item in data_list]
+                    
+                    accuracy = np.mean(is_correct) if is_correct else 0.0
+                    
+                    print(f"[DEBUG] _run_benchmark_evaluation: Recording {benchmark_name}: {len(data_list)} items, accuracy={accuracy:.3f}")
+                    
+                    self.benchmark_tracker.record_validation_results(
+                        step=self.global_steps,
+                        benchmark_name=benchmark_name,
+                        questions=questions,
+                        model_answers=model_answers,
+                        ground_truths=ground_truths,
+                        scores=scores,
+                        accuracy=accuracy
+                    )
+                
+                # Generate analysis and improvement suggestions (skip first validation)
+                if self.global_steps > 0:
+                    print(f"[DEBUG] _run_benchmark_evaluation: Generating analysis report for step {self.global_steps}")
+                    analysis_report = self.benchmark_tracker.generate_analysis_report(self.global_steps)
+                    improvement_prompts = self.benchmark_tracker.generate_improvement_prompts(self.global_steps)
+                    
+                    print(f"[DEBUG] _run_benchmark_evaluation: Analysis report length: {len(analysis_report) if analysis_report else 0}")
+                    print(f"[DEBUG] _run_benchmark_evaluation: Generated {len(improvement_prompts)} improvement prompts: {list(improvement_prompts.keys()) if improvement_prompts else []}")
+                    
+                    # Log analysis and suggestions
+                    if analysis_report:
+                        pp.section_header("Benchmark Performance Analysis")
+                        pp.code_block(analysis_report)
+                    
+                    if improvement_prompts:
+                        pp.section_header("Improvement Suggestions")
+                        for prompt_type, prompt_content in improvement_prompts.items():
+                            pp.status(f"{prompt_type.title()} Improvement", prompt_content, "info")
+                    
+                    # Save analysis to files
+                    print(f"[DEBUG] _run_benchmark_evaluation: Saving analysis to files")
+                    self.benchmark_tracker.save_analysis_to_files(self.global_steps, analysis_report, improvement_prompts)
+                    print(f"[DEBUG] _run_benchmark_evaluation: Analysis files saved successfully")
+            elif self.benchmark_tracker is not None:
+                print(f"[DEBUG] _run_benchmark_evaluation: No questions collected, skipping analysis")
+            else:
+                print(f"[DEBUG] _run_benchmark_evaluation: Tracker not initialized, skipping benchmark tracking")
             
             # Aggregate metrics
             final_metrics = {}
@@ -849,10 +1181,15 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                         final_metrics[k] = v_list[0]  # Take first value for non-numeric
             
             pp.status("Benchmark Evaluation", f"Completed successfully ({batch_count} batches processed)", "success")
+            print(f"[DEBUG] _run_benchmark_evaluation: Evaluation completed successfully")
             return final_metrics
             
         except Exception as e:
             pp.status("Benchmark Evaluation", f"Failed with error: {e}", "error")
+            print(f"[DEBUG] _run_benchmark_evaluation: Error occurred: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
             import traceback
             traceback.print_exc()
             return {}
