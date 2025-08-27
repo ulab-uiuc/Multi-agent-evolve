@@ -1,5 +1,11 @@
+# Experiment configuration
+experiment_timestamp: "${now:%Y-%m-%d_%H-%M-%S}"
+experiment_base_dir: "./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${trainer.project_name}_${trainer.experiment_name}"
+
 # Benchmark tracking configuration
 track_benchmarks: true
+benchmark_tracking_dir: "${experiment_base_dir}/benchmark_tracking"
+prompt_optimization_dir: "${experiment_base_dir}/prompt_optimization"
 
 data:
   tokenizer: null
@@ -95,7 +101,7 @@ actor_rollout_ref:
     n: 1 # > 1 for grpo
 
 trainer:
-  output_dir: "./outputs/benchmark_tracking"
+  output_dir: "${experiment_base_dir}"
   save_freq: 10
   log_freq: 1
   eval_freq: 5
@@ -119,7 +125,7 @@ trainer:
   default_hdfs_dir: null
   remove_previous_ckpt_in_save: False
   del_local_ckpt_after_load: False
-  default_local_dir: /data/yidingw/checkpoints/general/${trainer.project_name}/${trainer.experiment_name}
+  default_local_dir: /data/yidingw/checkpoints/general/${now:%Y-%m-%d}/${now:%H-%M-%S}_${trainer.project_name}_${trainer.experiment_name}
 
 
 critic:
@@ -177,6 +183,19 @@ azr:
   random_print_max_programs: 3
   train_propose: False  # Simplified for general tasks
   self_judge: True
+
+  enable_actor_prompt_optimization: true
+  prompt_optimization:
+    frequency: 1  # 每1个验证步骤优化一次
+    accuracy_threshold: 0.2  # 准确率低于20%时触发优化
+    max_improvements_per_step: 3
+    enable_safety_validation: true
+    output_dir: ${prompt_optimization_dir}
+  
+  # Benchmark tracking settings
+  benchmark_tracking:
+    output_dir: ${benchmark_tracking_dir}
+    enable: true
   
   # Benchmark evaluation settings for general tasks
   benchmark_validation_dir: "./validation_datasets"
