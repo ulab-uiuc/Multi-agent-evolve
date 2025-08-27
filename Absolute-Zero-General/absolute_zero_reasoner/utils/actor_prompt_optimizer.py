@@ -23,84 +23,210 @@ class ProtectedRegion:
 class ActorPromptOptimizer:
     """Uses the actor model to optimize prompts based on benchmark analysis"""
     
-    def __init__(self, model_interface, prompt_manager: PromptManager, output_dir: str = "./actor_prompt_optimization"):
+    def __init__(self, model_interface, prompt_manager: PromptManager, output_dir: str = "./actor_prompt_optimization",
+                 infer_together: bool = False):
         self.model_interface = model_interface
         self.prompt_manager = prompt_manager
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Store configuration for judge type determination
+        self.infer_together = infer_together
+        
         # Define protected regions that should not be modified
-        # Based on the original prompts in prompts.py
+        # Include essential tags, template variables, and key structural elements
         self.protected_regions = {
             'solver': [
                 ProtectedRegion(
-                    name='chat_format',
-                    pattern=r'A conversation between User and Assistant',
-                    description='Core conversation structure'
-                ),
-                ProtectedRegion(
-                    name='thinking_tags',
-                    pattern=r'<think>.*?</think>',
-                    description='Required thinking process tags'
+                    name='question_variable',
+                    pattern=r'\{question\}',
+                    description='Question template variable - must be present for input'
                 ),
                 ProtectedRegion(
                     name='answer_tags',
                     pattern=r'<answer>.*?</answer>',
-                    description='Required answer tags'
-                ),
-                ProtectedRegion(
-                    name='user_assistant_pattern',
-                    pattern=r'User:.*?Assistant:',
-                    description='User-Assistant interaction pattern'
-                ),
-                ProtectedRegion(
-                    name='placeholder_format',
-                    pattern=r'\{.*?\}',
-                    description='Question placeholder format'
+                    description='Answer output tags for structured response'
                 )
             ],
+            'judge_answer': [
+                ProtectedRegion(
+                    name='think_tags',
+                    pattern=r'<think>',
+                    description='Think opening tags'
+                ),
+                ProtectedRegion(
+                    name='think_close_tags', 
+                    pattern=r'</think>',
+                    description='Think closing tags'
+                ),
+                ProtectedRegion(
+                    name='score_tags',
+                    pattern=r'<score>',
+                    description='Score opening tags'
+                ),
+                ProtectedRegion(
+                    name='score_close_tags',
+                    pattern=r'</score>',
+                    description='Score closing tags'
+                ),
+                ProtectedRegion(
+                    name='question_variable',
+                    pattern=r'\{question\}',
+                    description='Question template variable'
+                ),
+                ProtectedRegion(
+                    name='answer_variable',
+                    pattern=r'\{answer\}',
+                    description='Answer template variable'
+                ),
+                ProtectedRegion(
+                    name='score_range',
+                    pattern=r'score from 1 to 10',
+                    description='Score range specification (1-10)'
+                )
+            ],
+            'judge_question': [
+                ProtectedRegion(
+                    name='think_tags',
+                    pattern=r'<think>',
+                    description='Think opening tags'
+                ),
+                ProtectedRegion(
+                    name='think_close_tags', 
+                    pattern=r'</think>',
+                    description='Think closing tags'
+                ),
+                ProtectedRegion(
+                    name='score_tags',
+                    pattern=r'<score>',
+                    description='Score opening tags'
+                ),
+                ProtectedRegion(
+                    name='score_close_tags',
+                    pattern=r'</score>',
+                    description='Score closing tags'
+                ),
+                ProtectedRegion(
+                    name='question_variable',
+                    pattern=r'\{question\}',
+                    description='Question template variable'
+                ),
+                ProtectedRegion(
+                    name='score_range',
+                    pattern=r'score from 1 to 10',
+                    description='Score range specification (1-10)'
+                )
+            ],
+            'judge_together': [
+                ProtectedRegion(
+                    name='think_tags',
+                    pattern=r'<think>',
+                    description='Think opening tags'
+                ),
+                ProtectedRegion(
+                    name='think_close_tags', 
+                    pattern=r'</think>',
+                    description='Think closing tags'
+                ),
+                ProtectedRegion(
+                    name='score_tags',
+                    pattern=r'<score>',
+                    description='Score opening tags'
+                ),
+                ProtectedRegion(
+                    name='score_close_tags',
+                    pattern=r'</score>',
+                    description='Score closing tags'
+                ),
+                ProtectedRegion(
+                    name='question_variable',
+                    pattern=r'\{question\}',
+                    description='Question template variable'
+                ),
+                ProtectedRegion(
+                    name='answer_variable',
+                    pattern=r'\{answer\}',
+                    description='Answer template variable'
+                ),
+                ProtectedRegion(
+                    name='score_range',
+                    pattern=r'score from 1 to 10',
+                    description='Score range specification (1-10)'
+                )
+            ],
+            # Backward compatibility: generic judge points to judge_answer
             'judge': [
                 ProtectedRegion(
-                    name='task_header',
-                    pattern=r'## Task:.*?Given Task',
-                    description='Task header structure'
+                    name='think_tags',
+                    pattern=r'<think>',
+                    description='Think opening tags'
                 ),
                 ProtectedRegion(
-                    name='instructions_section',
-                    pattern=r'### Instructions:',
-                    description='Instructions section marker'
+                    name='think_close_tags', 
+                    pattern=r'</think>',
+                    description='Think closing tags'
                 ),
                 ProtectedRegion(
-                    name='output_format',
-                    pattern=r'no need to restate or reformat the task',
-                    description='Output format instructions'
+                    name='score_tags',
+                    pattern=r'<score>',
+                    description='Score opening tags'
+                ),
+                ProtectedRegion(
+                    name='score_close_tags',
+                    pattern=r'</score>',
+                    description='Score closing tags'
+                ),
+                ProtectedRegion(
+                    name='question_variable',
+                    pattern=r'\{question\}',
+                    description='Question template variable'
+                ),
+                ProtectedRegion(
+                    name='answer_variable',
+                    pattern=r'\{answer\}',
+                    description='Answer template variable'
+                ),
+                ProtectedRegion(
+                    name='score_range',
+                    pattern=r'score from 1 to 10',
+                    description='Score range specification (1-10)'
                 )
             ],
             'proposer': [
                 ProtectedRegion(
-                    name='task_creation_header',
-                    pattern=r'## Task: Create a.*?Original Task',
-                    description='Task creation header'
+                    name='think_tags',
+                    pattern=r'<think>',
+                    description='Think opening tags'
                 ),
                 ProtectedRegion(
-                    name='output_format_section',
-                    pattern=r'### Output Format:',
-                    description='Output format section marker'
+                    name='think_close_tags',
+                    pattern=r'</think>',
+                    description='Think closing tags'
                 ),
                 ProtectedRegion(
-                    name='think_question_tags',
-                    pattern=r'<think>.*?<question>',
-                    description='Think-question output tags'
+                    name='question_tags',
+                    pattern=r'<question>',
+                    description='Question opening tags'
                 ),
                 ProtectedRegion(
-                    name='task_requirements',
-                    pattern=r'### Task Requirements:',
-                    description='Task requirements section'
+                    name='question_close_tags',
+                    pattern=r'</question>',
+                    description='Question closing tags'
                 )
             ]
         }
         
+        print(f"[DEBUG] ActorPromptOptimizer initialized with infer_together={self.infer_together}")
         print(f"[DEBUG] ActorPromptOptimizer initialized with protected regions: {list(self.protected_regions.keys())}")
+    
+    def get_active_judge_types(self) -> List[str]:
+        """Get the list of judge types that are actually used based on configuration"""
+        if self.infer_together:
+            # When infer_together=True, only use judge_together
+            return ['judge_together']
+        else:
+            # When infer_together=False, use separate judge types
+            return ['judge_answer', 'judge_question']
     
     def optimize_prompts_from_analysis(self, benchmark_analysis: str, problematic_questions: Dict[str, List[str]], 
                                      performance_trends: Dict, step: int) -> Dict[str, str]:
@@ -110,8 +236,13 @@ class ActorPromptOptimizer:
         
         optimized_prompts = {}
         
-        # Optimize each prompt type
-        for prompt_type in ['solver', 'judge', 'proposer']:
+        # Get active judge types based on configuration
+        active_judge_types = self.get_active_judge_types()
+        print(f"[DEBUG] ActorPromptOptimizer: Active judge types: {active_judge_types}")
+        
+        # Optimize each prompt type (including only active judge types)
+        prompt_types_to_optimize = ['solver', 'proposer'] + active_judge_types
+        for prompt_type in prompt_types_to_optimize:
             print(f"[DEBUG] ActorPromptOptimizer: Optimizing {prompt_type} prompt")
             
             try:
@@ -276,6 +407,9 @@ Also explain your changes within <explanation> tags:
             print(f"[DEBUG] ActorPromptOptimizer: No improved prompt found in response")
             return current_template
         
+        # Auto-complete missing protected elements
+        improved_prompt = self._auto_complete_protected_elements(prompt_type, improved_prompt, current_template)
+        
         # Validate that protected regions are preserved
         if not self._validate_protected_regions(prompt_type, improved_prompt):
             print(f"[DEBUG] ActorPromptOptimizer: Protected regions validation failed")
@@ -288,6 +422,90 @@ Also explain your changes within <explanation> tags:
         
         print(f"[DEBUG] ActorPromptOptimizer: Safe optimization validated successfully")
         return improved_prompt
+    
+    def _auto_complete_protected_elements(self, prompt_type: str, improved_prompt: str, 
+                                        original_prompt: str) -> str:
+        """Auto-complete missing protected elements from original prompt"""
+        
+        # Map prompt types for backward compatibility
+        actual_prompt_type = prompt_type
+        if prompt_type == 'judge' and prompt_type not in self.protected_regions:
+            actual_prompt_type = 'judge_answer'  # Default fallback
+        
+        protected_regions = self.protected_regions.get(actual_prompt_type, [])
+        completed_prompt = improved_prompt
+        
+        # Check and add missing protected elements
+        for region in protected_regions:
+            if not re.search(region.pattern, completed_prompt, re.DOTALL | re.IGNORECASE):
+                # Find the element in the original prompt
+                original_match = re.search(region.pattern, original_prompt, re.DOTALL | re.IGNORECASE)
+                
+                if original_match:
+                    # Add the missing element with appropriate context
+                    missing_element = original_match.group(0)
+                    
+                    # Smart placement based on prompt type and element type
+                    if region.name == 'question_variable' and 'solver' in actual_prompt_type:
+                        # For solver: ensure {question} is present
+                        completed_prompt += f"\n\n**Input Format**: {missing_element}"
+                    elif region.name == 'question_variable' and 'judge' in actual_prompt_type:
+                        # For judge: ensure {question} variable
+                        completed_prompt += f"\n\n**Question**: {missing_element}"
+                    elif region.name == 'answer_variable' and 'judge' in actual_prompt_type:
+                        # For judge: ensure {answer} variable
+                        completed_prompt += f"\n\n**Answer**: {missing_element}"
+                    elif 'answer_tags' in region.name:
+                        # For solver: ensure <answer> tags
+                        completed_prompt += f"\n\n**Output Format**: Please provide your response in {missing_element} tags."
+                    elif 'think_tags' in region.name and 'close' not in region.name:
+                        # Opening think tags
+                        completed_prompt += f"\n\nFirst analyze in {missing_element} tags:"
+                    elif 'think_close_tags' in region.name:
+                        # Closing think tags
+                        if '<think>' in completed_prompt:
+                            # Insert before the end if <think> exists
+                            completed_prompt += f"\n{missing_element}"
+                        else:
+                            completed_prompt += f"\n\nEnd analysis with {missing_element}"
+                    elif 'score_tags' in region.name and 'close' not in region.name:
+                        # Opening score tags
+                        completed_prompt += f"\n\nProvide final rating in {missing_element} format."
+                    elif 'score_close_tags' in region.name:
+                        # Closing score tags
+                        completed_prompt += f"\n{missing_element}"
+                    elif 'question_tags' in region.name and 'close' not in region.name:
+                        # Opening question tags for proposer
+                        completed_prompt += f"\n\nGenerate your question in {missing_element} format."
+                    elif 'question_close_tags' in region.name:
+                        # Closing question tags
+                        completed_prompt += f"\n{missing_element}"
+                    elif 'score_range' in region.name:
+                        # Score range specification
+                        completed_prompt += f"\n\n**Rating**: Provide a {missing_element}."
+                    else:
+                        # Default: add with context
+                        completed_prompt += f"\n\n**Required**: {missing_element}"
+                    
+                    print(f"[DEBUG] ActorPromptOptimizer: Auto-completed missing element: {region.name}")
+                else:
+                    # If not found in original, add generic format requirement
+                    if region.name == 'question_variable':
+                        completed_prompt += "\n\n**Input Format**: {question}"
+                    elif region.name == 'answer_variable':
+                        completed_prompt += "\n\n**Answer Format**: {answer}"
+                    elif 'answer_tags' in region.name:
+                        completed_prompt += "\n\n**Output Format**: Provide your response in <answer></answer> tags."
+                    elif region.name == 'score_range':
+                        completed_prompt += "\n\n**Rating**: Provide a score from 1 to 10."
+                    elif 'think_tags' in region.name:
+                        completed_prompt += "\n\n**Analysis**: Use <think></think> tags for your reasoning."
+                    elif 'question_tags' in region.name:
+                        completed_prompt += "\n\n**Output**: Generate questions in <question></question> tags."
+                    
+                    print(f"[DEBUG] ActorPromptOptimizer: Added generic format for missing element: {region.name}")
+        
+        return completed_prompt
     
     def _extract_improved_prompt(self, response: str) -> str:
         """Extract improved prompt from actor model response"""
@@ -311,7 +529,12 @@ Also explain your changes within <explanation> tags:
     def _validate_protected_regions(self, prompt_type: str, improved_prompt: str) -> bool:
         """Validate that protected regions are preserved in the improved prompt"""
         
-        protected_regions = self.protected_regions.get(prompt_type, [])
+        # Map prompt types for backward compatibility
+        actual_prompt_type = prompt_type
+        if prompt_type == 'judge' and prompt_type not in self.protected_regions:
+            actual_prompt_type = 'judge_answer'  # Default fallback
+        
+        protected_regions = self.protected_regions.get(actual_prompt_type, [])
         
         for region in protected_regions:
             if not re.search(region.pattern, improved_prompt, re.DOTALL | re.IGNORECASE):

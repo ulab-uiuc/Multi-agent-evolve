@@ -196,6 +196,7 @@ def get_judge_general_io_data(
     output_path: str,
     split: str,
     tokenizer: AutoTokenizer,
+    prompt_manager=None,
 ):
     return_io_data = []
     instruction_template = '{}'
@@ -205,6 +206,7 @@ def get_judge_general_io_data(
             get_general_judger_prompt(
                 question=io_item['question'],
                 answer=io_item['reward_model']['ground_truth'],
+                prompt_manager=prompt_manager,
             )
         )
         print(f"Generated prompt: {io_prompt}")

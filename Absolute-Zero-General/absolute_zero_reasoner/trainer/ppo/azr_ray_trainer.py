@@ -711,17 +711,35 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
         # Initialize actor-driven prompt optimizer
         self.enable_actor_optimization = getattr(self.config.azr, 'enable_actor_prompt_optimization', False)
         if self.enable_actor_optimization:
+            # Get infer_together configuration from reward_fn config
+            infer_together = getattr(self.config.reward_fn, 'infer_together', False)
+            
             self.actor_prompt_optimizer = ActorPromptOptimizer(
                 model_interface=self._create_model_interface(),
                 prompt_manager=self.prompt_manager,
-                output_dir=self.config.trainer.default_local_dir + "/actor_prompt_optimization"
+                output_dir=self.config.trainer.default_local_dir + "/actor_prompt_optimization",
+                infer_together=infer_together
             )
             self.safe_prompt_updater = SafePromptUpdater(self.prompt_manager)
-            print(f"[DEBUG] GeneralIORayPPOTrainer: Initialized with actor prompt optimization ENABLED")
+            print(f"[DEBUG] GeneralIORayPPOTrainer: Initialized with actor prompt optimization ENABLED (infer_together={infer_together})")
         else:
             self.actor_prompt_optimizer = None
             self.safe_prompt_updater = None
             print(f"[DEBUG] GeneralIORayPPOTrainer: Actor prompt optimization DISABLED")
+            
+        # Set prompt_manager for reward functions if available
+        if hasattr(self, 'prompt_manager') and self.prompt_manager is not None:
+            if hasattr(self.reward_fn, 'set_prompt_manager'):
+                self.reward_fn.set_prompt_manager(self.prompt_manager)
+                print(f"[DEBUG] GeneralIORayPPOTrainer: Set prompt_manager for reward_fn")
+            
+            if hasattr(self, 'val_reward_fn') and self.val_reward_fn is not None and hasattr(self.val_reward_fn, 'set_prompt_manager'):
+                self.val_reward_fn.set_prompt_manager(self.prompt_manager)
+                print(f"[DEBUG] GeneralIORayPPOTrainer: Set prompt_manager for val_reward_fn")
+                
+            if hasattr(self, 'benchmark_reward_fn') and self.benchmark_reward_fn is not None and hasattr(self.benchmark_reward_fn, 'set_prompt_manager'):
+                self.benchmark_reward_fn.set_prompt_manager(self.prompt_manager)
+                print(f"[DEBUG] GeneralIORayPPOTrainer: Set prompt_manager for benchmark_reward_fn")
             
         print(f"[DEBUG] GeneralIORayPPOTrainer: Initialized with prompt manager")
     
@@ -1008,6 +1026,7 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             output_path=parquet_path,
             split='train',
             tokenizer=self.tokenizer,
+            prompt_manager=self.prompt_manager,  # Pass prompt manager
         )
 
         judge_train_dataset = RLHFDataset(

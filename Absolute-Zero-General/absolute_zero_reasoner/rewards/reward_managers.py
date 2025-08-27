@@ -909,6 +909,7 @@ class GeneralIORewardManager:
         judge_with_actor: bool = False,
         train_judge: bool = False,
         infer_together: bool = False,
+        prompt_manager=None,
         **kwargs
     ):
         self.tokenizer = tokenizer
@@ -929,8 +930,13 @@ class GeneralIORewardManager:
         self.judge_with_actor = judge_with_actor
         self.train_judge = train_judge
         self.infer_together = infer_together
+        self.prompt_manager = prompt_manager
 
         assert not self.train_judge or self.judge_with_actor, "judge_with_actor must be activated if train_judge is True"
+
+    def set_prompt_manager(self, prompt_manager):
+        """Set or update the prompt_manager for this reward manager."""
+        self.prompt_manager = prompt_manager
         
         # Initialize the external LLM client
         self.client = OpenAI(
@@ -989,6 +995,33 @@ class GeneralIORewardManager:
     def _generate_prompt_for_judge(self, question: str = None, answer: str = None, prompt_type: str = "answer") -> str:
         """Generate a prompt for the LLM to judge the quality of a question and response."""
         assert prompt_type in ["answer", "question", "together"], f"Invalid prompt type: {prompt_type}"
+        
+        # Use prompt_manager if available, otherwise fall back to hardcoded prompts
+        if hasattr(self, 'prompt_manager') and self.prompt_manager is not None:
+            # Determine the correct judge type based on prompt_type
+            if prompt_type == "answer":
+                judge_type = "judge_answer"
+            elif prompt_type == "question":
+                judge_type = "judge_question"  
+            elif prompt_type == "together":
+                judge_type = "judge_together"
+            else:
+                raise ValueError(f"Invalid prompt type: {prompt_type}")
+            
+            # Get optimized prompt from prompt_manager
+            judge_prompt_template = self.prompt_manager.get_prompt(judge_type)
+            
+            # Fill in the template variables
+            if prompt_type == "answer":
+                prompt = judge_prompt_template.format(question=question, answer=answer)
+            elif prompt_type == "question":
+                prompt = judge_prompt_template.format(question=question)
+            elif prompt_type == "together":
+                prompt = judge_prompt_template.format(question=question, answer=answer)
+                
+            return prompt
+        
+        # Fallback to hardcoded prompts if prompt_manager is not available
         prompt = ""
         if prompt_type == "answer":
             prompt = f"""Please evaluate the following solution to a question/problem.
