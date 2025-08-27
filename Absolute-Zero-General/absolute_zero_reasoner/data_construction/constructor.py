@@ -4,7 +4,7 @@ from numpy import random
 import pandas as pd
 from transformers import AutoTokenizer
 
-from absolute_zero_reasoner.data_construction.prompts import get_code_problem_generator_prompt, get_code_problem_predictor_prompt, get_general_generator_prompt,get_general_generation_with_reference_prompt, get_general_predictor_prompt
+from absolute_zero_reasoner.data_construction.prompts import get_code_problem_generator_prompt, get_code_problem_predictor_prompt, get_general_generator_prompt,get_general_generation_with_reference_prompt, get_general_predictor_prompt, get_general_judger_prompt
 from absolute_zero_reasoner.data_construction.process_data import boxed_instruction, instruction_following
 from absolute_zero_reasoner.utils.code_utils.parsers import replace_main_function_name
 
@@ -100,8 +100,8 @@ def get_gen_general_io_data(
             io_item = {
                 "data_source": 'gen_general',
                 "prompt": [{"role": "user", "content": io_prompt}],
-                "problem": '',
                 "question": question,
+                "answer": "",
                 "ability": "general",
                 "reward_model": {"style": "rule", "ground_truth": ''},
                 "extra_info": {
@@ -162,7 +162,8 @@ def get_pred_general_io_data(
                     "role": "user",
                     "content": io_prompt,
                 }],
-                "problem": io_item['question'],
+                "question": io_item['question'],
+                "answer": "",
                 "ability": "general",
                 "reward_model": {
                     "style": "rule",
@@ -172,6 +173,60 @@ def get_pred_general_io_data(
                     'split': split,
                     'index': idx,
                     'metric': 'pred_general',
+                }
+            }
+            return_io_data.append(output_io_item)
+
+        if len(return_io_data) >= target_data_len:
+            break
+
+    # if io_data is not full, we sample upsample random data
+    while len(return_io_data) < target_data_len:
+        io_item = return_io_data[random.randint(0, len(return_io_data))]
+        return_io_data.append(io_item)
+
+    # output to parquet
+    df = pd.DataFrame(return_io_data)
+    df.to_parquet(output_path)
+
+def get_judge_general_io_data(
+    io_data: List[Dict],
+    target_data_len: int,
+    content_max_length: int,
+    output_path: str,
+    split: str,
+    tokenizer: AutoTokenizer,
+):
+    return_io_data = []
+    instruction_template = '{}'
+
+    for idx, io_item in enumerate(io_data):
+        io_prompt = instruction_template.format(
+            get_general_judger_prompt(
+                question=io_item['question'],
+                answer=io_item['reward_model']['ground_truth'],
+            )
+        )
+        print(f"Generated prompt: {io_prompt}")
+        # since we have abundant judge data, we can afford to filter out some data
+        if len(tokenizer(io_prompt)['input_ids']) <= content_max_length:
+            output_io_item = {
+                "data_source": 'judge_general',
+                "prompt": [{
+                    "role": "user",
+                    "content": io_prompt,
+                }],
+                "question": io_item['question'],
+                "answer": io_item.get('answer', ''),
+                "ability": "general",
+                "reward_model": {
+                    "style": "rule",
+                    "ground_truth": io_item.get('answer', ''),
+                },
+                "extra_info": {
+                    'split': split,
+                    'index': idx,
+                    'metric': 'judge_general',
                 }
             }
             return_io_data.append(output_io_item)
