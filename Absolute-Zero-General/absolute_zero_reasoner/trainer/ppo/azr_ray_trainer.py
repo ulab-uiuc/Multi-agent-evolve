@@ -467,7 +467,7 @@ class DatasetManager:
                 if 'generation' in entry:
                     try:
                         generation_type = determine_type(entry['generation'])
-                        self.count_element(entry['generation'], generation_type, 'general')
+                        self.count_element(entry['generation'], generation_type, 'general_pair')
                     except:
                         pass
 
