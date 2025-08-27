@@ -68,10 +68,10 @@ def main_task(config, compute_score=None):
     config.trainer.default_local_dir = f"/data/yidingw/checkpoints/general/{date_part}/{time_part}_{config.trainer.project_name}_{config.trainer.experiment_name}"
     
     # Set output directories for prompt optimization and benchmark tracking
-    if hasattr(config, 'reward_fn') and hasattr(config.reward_fn, 'prompt_optimization'):
-        config.reward_fn.prompt_optimization.output_dir = config.prompt_optimization_dir
-    if hasattr(config, 'reward_fn') and hasattr(config.reward_fn, 'benchmark_tracking'):
-        config.reward_fn.benchmark_tracking.output_dir = config.benchmark_tracking_dir
+    if hasattr(config, 'azr') and hasattr(config.azr, 'prompt_optimization'):
+        config.azr.prompt_optimization.output_dir = config.prompt_optimization_dir
+    if hasattr(config, 'azr') and hasattr(config.azr, 'benchmark_tracking'):
+        config.azr.benchmark_tracking.output_dir = config.benchmark_tracking_dir
     
     # Create directories if they don't exist
     os.makedirs(experiment_base_dir, exist_ok=True)
