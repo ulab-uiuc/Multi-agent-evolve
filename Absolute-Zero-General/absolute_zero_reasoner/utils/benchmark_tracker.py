@@ -231,6 +231,11 @@ class BenchmarkTracker:
         if duplicates:
             print(f"[DEBUG] _create_step_summary: WARNING - Duplicate steps detected: {duplicates}")
         
+        # Debug benchmark names in this summary
+        print(f"[DEBUG] _create_step_summary: Step {step} benchmarks: {list(summary.benchmark_accuracies.keys())}")
+        for bench_name, accuracy in summary.benchmark_accuracies.items():
+            print(f"[DEBUG] _create_step_summary:   {bench_name}: {accuracy:.3f}")
+        
         print(f"[DEBUG] _create_step_summary: All steps in summaries: {[s.step for s in self.step_summaries]}")
     
     def analyze_performance_trends(self, min_steps: int = 2) -> Dict[str, Any]:
