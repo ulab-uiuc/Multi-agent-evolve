@@ -1768,6 +1768,9 @@ When you reference your own scores, you do not use the <score> and </score> tags
                         'question': data_dict.get('question', ''),
                         'answer': data_dict.get('answer', ''),
                         'thought': data_dict.get('thought', ''),
+                        'reward_model': {
+                            'ground_truth': data_dict.get('ground_truth', ''),
+                        },
                         'uid': data_dict['uid'],
                     })
                 elif self.split == 'test':
