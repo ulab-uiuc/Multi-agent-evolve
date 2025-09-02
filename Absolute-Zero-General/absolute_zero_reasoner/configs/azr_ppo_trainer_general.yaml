@@ -178,7 +178,7 @@ azr:
   problem_types:
     - general  # Only general tasks
   pred_data_mix_strategy: "uniform_total"
-  past_epoch_window: 10
+  past_epoch_window: 1000
   pretrain_pred_steps: -1
   random_print_max_programs: 3
   train_propose: False  # Simplified for general tasks
