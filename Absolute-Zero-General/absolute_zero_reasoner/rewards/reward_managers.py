@@ -909,6 +909,7 @@ class GeneralIORewardManager:
         judge_with_actor: bool = False,
         train_judge: bool = False,
         infer_together: bool = False,
+        normalize_scores_in_batch: bool = False,
         prompt_manager=None,
         **kwargs
     ):
