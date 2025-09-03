@@ -95,6 +95,15 @@ def get_gen_general_io_data(
         #     # print("No question found in the generated prompt, skipping this item.")
         #     continue
 
+        # 显示给actor的prompt日志
+        from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter
+        PrettyPrinter.section_header(f"🤖 Gen_General Proposer Prompt for Actor (Item {idx+1})")
+        PrettyPrinter.code_block(f"Prompt Content:\n{io_prompt}")
+        print(f"[GEN_GENERAL_LOG] Prompt length: {len(tokenizer(io_prompt)['input_ids'])} tokens")
+        print(f"[GEN_GENERAL_LOG] Using prompt_manager: {prompt_manager is not None}")
+        if prompt_manager:
+            print(f"[GEN_GENERAL_LOG] Enhanced proposer instruction with question-answer verification enabled")
+        
         # 过滤过长样本
         if len(tokenizer(io_prompt)['input_ids']) <= content_max_length:
             io_item = {
@@ -223,7 +232,7 @@ def get_judge_general_io_data(
                 "ability": "general",
                 "reward_model": {
                     "style": "rule",
-                    "ground_truth": io_item['answer'],
+                    "ground_truth": io_item['reward_model']['ground_truth'],
                 },
                 "extra_info": {
                     'split': split,
