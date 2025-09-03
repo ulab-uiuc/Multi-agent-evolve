@@ -1048,24 +1048,36 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
             sampler = RandomSampler(data_source=judge_train_dataset, generator=train_dataloader_generator)
         else:
             sampler = SequentialSampler(data_source=judge_train_dataset)
+        
+        # Handle small datasets by adjusting batch_size and drop_last
+        actual_batch_size = self.config.data.train_batch_size
+        drop_last = True
+        
+        # If dataset is smaller than batch_size, adjust parameters
+        if len(judge_train_dataset) < self.config.data.train_batch_size:
+            if len(judge_train_dataset) == 0:
+                PrettyPrinter.status("ERROR", f"Judge dataset is completely empty for {problem_type}. Judge training will be skipped.", "error")
+                return None
+            else:
+                # Use smaller batch size and don't drop last incomplete batch
+                actual_batch_size = min(self.config.data.train_batch_size, len(judge_train_dataset))
+                drop_last = False
+                PrettyPrinter.status("WARN", f"Judge dataset size ({len(judge_train_dataset)}) is smaller than batch_size ({self.config.data.train_batch_size}). Using batch_size={actual_batch_size} and drop_last=False", "warn")
+        
         judge_train_dataloader = DataLoader(dataset=judge_train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
-                                           drop_last=True,
+                                           batch_size=actual_batch_size,
+                                           drop_last=drop_last,
                                            collate_fn=collate_fn,
                                            sampler=sampler)
         print(judge_train_dataloader)
         
-        # Handle empty dataset case
-        if len(judge_train_dataloader) == 0:
-            PrettyPrinter.status("WARN", f"Judge training dataloader is empty for {problem_type}. This may be due to insufficient paired data or data_len being too small compared to batch_size.", "warn")
-            PrettyPrinter.status("INFO", f"Dataset size: {len(judge_train_dataset)}, Batch size: {self.config.data.train_batch_size}, drop_last: True", "info")
-            # Create a minimal dummy dataloader to avoid assertion failure
-            # This is a temporary workaround - the training loop should handle empty dataloaders gracefully
-            if len(judge_train_dataset) == 0:
-                PrettyPrinter.status("ERROR", f"Judge dataset is completely empty for {problem_type}. Judge training will be skipped.", "error")
-                return None
+        # Verify dataloader has data when dataset is non-empty
+        if len(judge_train_dataset) > 0:
+            assert len(judge_train_dataloader) >= 1, f"Judge dataloader has length {len(judge_train_dataloader)} but dataset has {len(judge_train_dataset)} items (batch_size={actual_batch_size}, drop_last={drop_last})"
+        else:
+            PrettyPrinter.status("ERROR", f"Judge dataset is completely empty for {problem_type}. Judge training will be skipped.", "error")
+            return None
         
-        assert len(judge_train_dataloader) >= 1 or len(judge_train_dataset) == 0, f"Judge dataloader has length {len(judge_train_dataloader)} but dataset has {len(judge_train_dataset)} items"
         return iter(judge_train_dataloader)
     
     def _compute_batch(self, batch: DataProto, metrics: dict, timing_raw: dict, problem_type: str ) -> tuple[DataProto, dict]:
