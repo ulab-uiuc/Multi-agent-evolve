@@ -194,7 +194,7 @@ def main_task(config, compute_score=None):
             boxed_retry=config.reward_fn.boxed_retry,
             judge_with_actor=config.reward_fn.judge_with_actor,
             infer_together=config.reward_fn.infer_together,
-            normalize_scores_in_batch=config.reward_fn.normalize_scores_in_batch,
+            normalize_scores_in_batch=getattr(config.reward_fn, 'normalize_scores_in_batch', False),
             # judge_with_actor only available for infering question and answer score together
         )
 
