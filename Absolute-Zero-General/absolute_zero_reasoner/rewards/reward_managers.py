@@ -931,6 +931,7 @@ class GeneralIORewardManager:
         self.train_judge = train_judge
         self.infer_together = infer_together
         self.prompt_manager = prompt_manager
+        self.normalize_scores_in_batch = normalize_scores_in_batch
 
         assert not self.train_judge or self.judge_with_actor, "judge_with_actor must be activated if train_judge is True"
 
@@ -1179,6 +1180,17 @@ When you reference your own scores, you do not use the <score> and </score> tags
         batch = batch.union(out_gen_batch)
 
         return batch
+    
+    def normalize_scores_in_batch(self, scores):
+        """Normalize scores in a batch so that they fall into a normal distribution"""
+        scores = np.array(scores)
+        if np.std(scores) < 1e-5:
+            return [0.5] * len(scores)
+        normalized_scores = (scores - np.mean(scores)) / (np.std(scores) + 1e-5)
+        normalized_scores = 0.5 + 0.1 * normalized_scores  # Scale to have mean 0.5 and std 0.1
+        normalized_scores = np.clip(normalized_scores, 0.0, 1.0)  # Ensure scores are within [0, 1]
+        normalized_scores = np.round(normalized_scores)  # Ensure scores are integers
+        return normalized_scores.tolist()
 
     def _get_all_scores(self, data_dicts: List[Dict], rollout_actor_wg, n_samples: int, problem_type: str) -> List[float]:
         """
@@ -1193,6 +1205,8 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 if not self.judge_with_actor:
                     for data_dict in data_dicts:
                         avg_pred_scores.append(self._generate_llm_response(self._generate_prompt_for_pred(data_dict, self.infer_together))[0])
+                    if self.normalize_batch_scores:
+                        avg_pred_scores = self.normalize_scores_in_batch(avg_pred_scores)
                     return avg_gen_scores, avg_pred_scores
 
                 if rollout_actor_wg is None:
@@ -1253,6 +1267,8 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 print(f"Error in pred score computation: {e}")
                 avg_pred_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
 
+            if self.normalize_batch_scores:
+                avg_pred_scores = self.normalize_scores_in_batch(avg_pred_scores)
             return avg_gen_scores, avg_pred_scores
         
         if problem_type.startswith("gen") and not self.infer_together:
@@ -1475,6 +1491,10 @@ When you reference your own scores, you do not use the <score> and </score> tags
             if self.infer_together:
                 avg_gen_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
         
+        if self.normalize_batch_scores:
+            avg_gen_scores = self.normalize_scores_in_batch(avg_gen_scores)
+            avg_pred_scores = self.normalize_scores_in_batch(avg_pred_scores)
+
         return avg_gen_scores, avg_pred_scores
      
     def _generate_llm_response(self, prompt: str) -> List[float]:
