@@ -1372,6 +1372,27 @@ When you reference your own scores, you do not use the <score> and </score> tags
             batched_responses = []
             for b in batch:
                 response_text = self.tokenizer.decode(b.batch['responses'], skip_special_tokens=True)
+                
+                # 显示actor的回复日志
+                PrettyPrinter.section_header(f"🤖 Gen_General Actor Response")
+                PrettyPrinter.status(f"Question: {b.non_tensor_batch['question']}", "", "info")
+                PrettyPrinter.code_block(f"Actor Generated Response:\n{response_text}")
+                
+                # 如果使用了增强的proposer prompt，提取最后生成的问题
+                if hasattr(self, 'prompt_manager') and self.prompt_manager is not None:
+                    try:
+                        # 简单的提取最后一个question标签的方法
+                        import re
+                        question_pattern = r'<question>(.*?)</question>'
+                        questions = re.findall(question_pattern, response_text, re.DOTALL | re.IGNORECASE)
+                        if questions:
+                            final_question = questions[-1].strip()
+                            PrettyPrinter.status(f"Extracted Final Question: {final_question[:200]}..." if len(final_question) > 200 else f"Extracted Final Question: {final_question}", "", "success")
+                        else:
+                            PrettyPrinter.status("No question tags found in response", "", "warning")
+                    except Exception as e:
+                        PrettyPrinter.status(f"Failed to extract final question: {e}", "", "warning")
+                
                 batched_responses.append({
                     'response': response_text,
                     'uid': b.non_tensor_batch['uid'],
