@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from absolute_zero_reasoner.utils.prompt_manager import PromptManager, PromptTemplate
+from absolute_zero_reasoner.utils.prompt_manager import PromptManager
 
 
 @dataclass 
