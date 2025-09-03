@@ -72,10 +72,10 @@ class PromptManager:
         
         # Proposer prompt template (based on generation prompts)
         templates['proposer'] = PromptTemplate(
-            base_template=general_generation_prompt,
+            base_template=self._get_enhanced_proposer_prompt(general_generation_prompt),
             improvements=[],
             last_updated=datetime.now().isoformat(),
-            performance_context="Original template from prompts.py"
+            performance_context="Enhanced template with question-answer verification"
         )
         
         # Judge prompt templates (from reward_managers.py - different types for scoring)
@@ -105,6 +105,36 @@ class PromptManager:
         
         print(f"[DEBUG] PromptManager: Initialized templates from original sources")
         return templates
+    
+    def _get_enhanced_proposer_prompt(self, base_prompt: str) -> str:
+        """Enhance the proposer prompt to generate questions with answer verification"""
+        enhanced_prompt = f"""{base_prompt}
+
+IMPORTANT: After generating each question, you must immediately provide a complete answer to verify it's solvable.
+
+Follow this iterative format:
+<question>
+[Your generated question here]
+</question>
+
+<answer>
+[Your complete solution to the question - show all steps and reasoning]
+</answer>
+
+After providing the answer, think: Is this question clear, solvable, and appropriately challenging? If not, generate a new question-answer pair using the same format.
+
+Continue this process until you have a well-formed, solvable question. The final output should contain your best question-answer pair.
+
+EXTRACTION RULE: Only the content within the LAST <question></question> tags will be extracted and used.
+
+Make sure your final question is:
+- Clear and unambiguous
+- Solvable with the information provided
+- Appropriately challenging for the domain
+- Complete (not missing any necessary information)
+
+Your answer should demonstrate that the question is indeed solvable by providing a complete solution."""
+        return enhanced_prompt
     
     def _get_judge_template(self, prompt_type: str) -> str:
         """Extract judge template from reward managers"""
@@ -240,10 +270,35 @@ When you reference your own scores, you do not use the <score> and </score> tags
         
         # Proposer prompt template (for question generation)
         templates['proposer'] = PromptTemplate(
-            base_template="Generate a new question based on the following examples. The question should be challenging but solvable, and follow similar patterns to the reference questions.",
+            base_template="""Generate a new question based on the following examples. The question should be challenging but solvable, and follow similar patterns to the reference questions.
+
+IMPORTANT: After generating each question, you must immediately provide a complete answer to verify it's solvable.
+
+Follow this iterative format:
+<question>
+[Your generated question here]
+</question>
+
+<answer>
+[Your complete solution to the question - show all steps and reasoning]
+</answer>
+
+After providing the answer, think: Is this question clear, solvable, and appropriately challenging? If not, generate a new question-answer pair using the same format.
+
+Continue this process until you have a well-formed, solvable question. The final output should contain your best question-answer pair.
+
+EXTRACTION RULE: Only the content within the LAST <question></question> tags will be extracted and used.
+
+Make sure your final question is:
+- Clear and unambiguous
+- Solvable with the information provided
+- Appropriately challenging for the domain
+- Complete (not missing any necessary information)
+
+Your answer should demonstrate that the question is indeed solvable by providing a complete solution.""",
             improvements=[],
             last_updated=datetime.now().isoformat(),
-            performance_context="Fallback template"
+            performance_context="Enhanced fallback template with question-answer verification"
         )
         
         # Judge prompt templates (fallback versions)

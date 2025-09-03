@@ -932,7 +932,7 @@ class GeneralIORewardManager:
         self.train_judge = train_judge
         self.infer_together = infer_together
         self.prompt_manager = prompt_manager
-        self.normalize_scores_in_batch = normalize_scores_in_batch
+        self.normalize_batch_scores = normalize_scores_in_batch
 
         assert not self.train_judge or self.judge_with_actor, "judge_with_actor must be activated if train_judge is True"
 
