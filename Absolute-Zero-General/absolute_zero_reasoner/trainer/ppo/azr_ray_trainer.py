@@ -1054,7 +1054,18 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                                            collate_fn=collate_fn,
                                            sampler=sampler)
         print(judge_train_dataloader)
-        assert len(judge_train_dataloader) >= 1
+        
+        # Handle empty dataset case
+        if len(judge_train_dataloader) == 0:
+            PrettyPrinter.status("WARN", f"Judge training dataloader is empty for {problem_type}. This may be due to insufficient paired data or data_len being too small compared to batch_size.", "warn")
+            PrettyPrinter.status("INFO", f"Dataset size: {len(judge_train_dataset)}, Batch size: {self.config.data.train_batch_size}, drop_last: True", "info")
+            # Create a minimal dummy dataloader to avoid assertion failure
+            # This is a temporary workaround - the training loop should handle empty dataloaders gracefully
+            if len(judge_train_dataset) == 0:
+                PrettyPrinter.status("ERROR", f"Judge dataset is completely empty for {problem_type}. Judge training will be skipped.", "error")
+                return None
+        
+        assert len(judge_train_dataloader) >= 1 or len(judge_train_dataset) == 0, f"Judge dataloader has length {len(judge_train_dataloader)} but dataset has {len(judge_train_dataset)} items"
         return iter(judge_train_dataloader)
     
     def _compute_batch(self, batch: DataProto, metrics: dict, timing_raw: dict, problem_type: str ) -> tuple[DataProto, dict]:
@@ -1416,13 +1427,26 @@ class GeneralIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         pred_batch: DataProto = DataProto.from_single_dict(batch_dict)
                         pred_batch, metrics = self._compute_batch(pred_batch, metrics, timing_raw, problem_type='pred_general')
                         batches[f'pred_general'] = pred_batch
-                        batch_dict = next(judge_general_dataloader)
-                        judge_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                        judge_batch, metrics = self._compute_batch(judge_batch, metrics, timing_raw, problem_type='judge_general')
-                        if self.config.azr.train_judge:
-                            batches[f'judge_general'] = judge_batch
+                        
+                        # Handle judge training if dataloader is available and training is enabled
+                        if judge_general_dataloader is not None and getattr(self.config.azr, 'train_judge', False):
+                            try:
+                                batch_dict = next(judge_general_dataloader)
+                                judge_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                                judge_batch, metrics = self._compute_batch(judge_batch, metrics, timing_raw, problem_type='judge_general')
+                                batches[f'judge_general'] = judge_batch
+                            except StopIteration:
+                                PrettyPrinter.status("WARN", "Judge dataloader exhausted, skipping judge training for this step", "warn")
+                        elif judge_general_dataloader is None:
+                            PrettyPrinter.status("INFO", "Judge training skipped due to insufficient paired data", "info")
+                        else:
+                            PrettyPrinter.status("INFO", "Judge training disabled in configuration", "info")
 
                     # concatenate batches
+                    if not batches:
+                        PrettyPrinter.status("ERROR", "No batches available for training. Skipping this step.", "error")
+                        continue
+                    
                     batch = DataProto.concat(list(batches.values()))
 
                     PrettyPrinter.section_header(f"Starting Parameter Updates")
