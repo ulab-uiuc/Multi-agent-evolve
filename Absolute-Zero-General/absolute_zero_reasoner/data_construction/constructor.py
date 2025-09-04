@@ -74,16 +74,24 @@ def get_gen_general_io_data(
             chosen_references = [io_data[i] for i in chosen_indices]
         if not chosen_references:
             if prompt_manager:
-                # Use enhanced proposer instruction with empty references
-                io_prompt = f"{get_general_generator_prompt(reference_questions=chosen_references)}"
+                # Use the enhanced proposer instruction directly from prompt_manager
+                io_prompt = instruction_template
             else:
                 io_prompt = instruction_template.format(
                     get_general_generator_prompt(reference_questions=chosen_references)
                 )
         else:
             if prompt_manager:
-                # Use enhanced proposer instruction with references
-                io_prompt = f"{get_general_generation_with_reference_prompt(reference_questions=chosen_references)}"
+                # Use the enhanced proposer instruction directly from prompt_manager
+                # But we need to add reference questions to it
+                base_instruction = instruction_template
+                reference_section = get_general_generation_with_reference_prompt(reference_questions=chosen_references)
+                # Extract the reference questions part from the reference_section
+                if "### Reference Questions:" in reference_section:
+                    ref_part = reference_section.split("### Reference Questions:")[1]
+                    io_prompt = base_instruction + "\n### Reference Questions:" + ref_part
+                else:
+                    io_prompt = base_instruction
             else:
                 io_prompt = instruction_template.format(
                     get_general_generation_with_reference_prompt(reference_questions=chosen_references)
