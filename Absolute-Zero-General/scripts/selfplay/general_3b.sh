@@ -6,7 +6,7 @@ export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export RAY_memory_monitor_refresh_ms=0
 export RAY_LOGGING_LEVEL=DEBUG
 export HYDRA_FULL_ERROR=1
-export CUDA_VISIBLE_DEVICES="7,8"
+export CUDA_VISIBLE_DEVICES="8,9"
 export NCCL_P2P_DISABLE=1
 
 python -m absolute_zero_reasoner.main_azr_ppo \
@@ -26,7 +26,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=8 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0.0 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -36,8 +36,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.grad_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    +actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
-    +actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
+    +actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+    +actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.max_num_batched_tokens=8196 \
@@ -51,14 +51,14 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='general_io_reasoning' \
-    trainer.experiment_name='general_io_3b_withref_16-8bs_valfirst_n1_self_judge' \
+    trainer.experiment_name='general_io_3b_withref_16-8bs_valfirst_n1_self_judge_seperate_withanswergeneration_evolveprompt' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=25 \
-    trainer.remove_previous_ckpt_in_save=False \
-    trainer.del_local_ckpt_after_load=False \
-    trainer.test_freq=1 \
-    +trainer.val_before_train=True \
+    trainer.remove_previous_ckpt_in_save=True \
+    trainer.del_local_ckpt_after_load=True \
+    trainer.test_freq=25 \
+    +trainer.val_before_train=false \
     reward_fn.extraction_type=boxed \
     reward_fn.math_metric=deepscaler \
     reward_fn.llm_model_name="nvidia/llama-3.1-nemotron-70b-instruct" \
@@ -66,8 +66,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     reward_fn.max_tokens=1000 \
     reward_fn.top_p=0.95 \
     reward_fn.stream=true \
-    +reward_fn.judge_with_actor=false \
-    +reward_fn.infer_together=true \
+    +reward_fn.judge_with_actor=true \
+    +reward_fn.infer_together=false \
     +trainer.val_generations_to_log_to_wandb=0 \
     azr.task_type=general \
     azr.data_selection_strategy.update_iteration=1 \
@@ -75,7 +75,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.problem_types=['general'] \
     azr.pred_data_mix_strategy=uniform_total \
     +azr.judge_data_mix_strategy=uniform_total \
-    +azr.train_judge=True \
+    +azr.train_judge=False \
     azr.train_propose=True \
     azr.reward.n_samples=3 \
     azr.reward.generation_reward_config.format_reward=false \
@@ -89,11 +89,11 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.data_selection_strategy.io_n=1 \
     trainer.resume_mode=disable \
     +trainer.total_epochs=30 \
-    +azr.enable_actor_prompt_optimization=true \
-    +azr.prompt_optimization.frequency=1 \
-    +azr.prompt_optimization.accuracy_threshold=0.3 \
-    +azr.prompt_optimization.max_improvements_per_step=3 \
-    +azr.prompt_optimization.enable_safety_validation=true \
+    azr.enable_actor_prompt_optimization=true \
+    azr.prompt_optimization.frequency=1 \
+    azr.prompt_optimization.accuracy_threshold=0.3 \
+    azr.prompt_optimization.max_improvements_per_step=3 \
+    azr.prompt_optimization.enable_safety_validation=true \
     +azr.prompt_optimization.optimization_temperature=0.7 \
     +azr.prompt_optimization.optimization_max_tokens=1024 \
     +azr.prompt_optimization.backup_prompts=true $@
