@@ -1337,13 +1337,16 @@ When you reference your own scores, you do not use the <score> and </score> tags
         print(f"[DEBUG] rollout_actor_wg is not None, proceeding with actual scoring for problem_type: {problem_type}")
 
         try:
+            # Define helper function for extracting questions
+            import re
+            def extract_question(text):
+                pattern = r'<question>(.*?)</question>'
+                matches = re.findall(pattern, text, re.DOTALL)
+                return matches
+            
             # Create prompts for sampling
             prompts = []
             for data_dict in data_dicts:
-                def extract_question(text):
-                    pattern = r'<question>(.*?)</question>'
-                    matches = re.findall(pattern, text, re.DOTALL)
-                    return matches
                 question = extract_question(data_dict.get('generation', '<question></question>').split("[Your designed task]")[-1])
                 if question != []:
                     question = question[-1]
@@ -1511,7 +1514,9 @@ When you reference your own scores, you do not use the <score> and </score> tags
                             avg_gen_scores.append(0.5)
                         
         except Exception as e:
+            import traceback
             print(f"Error in solver score computation: {e}")
+            print(f"Error traceback: {traceback.format_exc()}")
             avg_pred_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
             if self.infer_together:
                 avg_gen_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
