@@ -746,15 +746,15 @@ class RayPPOTrainer(object):
                                                            'latest_checkpointed_iteration.txt')
 
         # remove old ckpts if exists
-        # if os.path.exists(local_latest_checkpointed_iteration):
-        #     with open(local_latest_checkpointed_iteration, "r") as f:
-        #         last_checkpointed_iteration = int(f.read().strip())
-        #     if last_checkpointed_iteration is not None:
-        #         last_checkpointed_folder = os.path.join(
-        #             self.config.trainer.default_local_dir, f"global_step_{last_checkpointed_iteration}"
-        #         )
-        #         if os.path.exists(last_checkpointed_folder):
-        #             os.system(f"rm -rf {last_checkpointed_folder}")
+        if os.path.exists(local_latest_checkpointed_iteration):
+            with open(local_latest_checkpointed_iteration, "r") as f:
+                last_checkpointed_iteration = int(f.read().strip())
+            if last_checkpointed_iteration is not None:
+                last_checkpointed_folder = os.path.join(
+                    self.config.trainer.default_local_dir, f"global_step_{last_checkpointed_iteration}"
+                )
+                if os.path.exists(last_checkpointed_folder):
+                    os.system(f"rm -rf {last_checkpointed_folder}")
 
         with open(local_latest_checkpointed_iteration, 'w') as f:
             f.write(str(self.global_steps))
