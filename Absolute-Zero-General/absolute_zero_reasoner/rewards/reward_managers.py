@@ -1331,7 +1331,10 @@ When you reference your own scores, you do not use the <score> and </score> tags
 
         # check rollout actor for gen and together problems
         if rollout_actor_wg is None:
+            print(f"[DEBUG] rollout_actor_wg is None, returning default scores for problem_type: {problem_type}")
             return [0.5] * len(data_dicts), [0.5] * len(data_dicts)  # Default neutral difficulty score
+
+        print(f"[DEBUG] rollout_actor_wg is not None, proceeding with actual scoring for problem_type: {problem_type}")
 
         try:
             # Create prompts for sampling
@@ -1754,7 +1757,9 @@ When you reference your own scores, you do not use the <score> and </score> tags
             PrettyPrinter.section_header("Computing Generation Rewards for GeneralIO Tasks")
             
             # Step 1: Get solver average scores and llm scores(possibly) from actor model
+            print(f"[DEBUG] Getting all scores for problem_type: {problem_type}, rollout_actor_wg is None: {rollout_actor_wg is None}")
             llm_scores, solver_avg_scores = self._get_all_scores(data_dicts, rollout_actor_wg, n_samples, problem_type)
+            print(f"[DEBUG] Got scores - LLM scores: {llm_scores[:3]}..., Solver avg scores: {solver_avg_scores[:3]}...")
             
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
@@ -1762,6 +1767,8 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 # Compute combined score: LLM judge + difficulty (1 - solver average)
                 difficulty_score = 1 - solver_avg_scores[i]
                 final_score = 0.5 * llm_scores[i] + 0.5 * difficulty_score
+                
+                print(f"[DEBUG] Item {i}: solver_avg={solver_avg_scores[i]:.4f}, difficulty={difficulty_score:.4f}, llm={llm_scores[i]:.4f}, final={final_score:.4f}")
                 
                 reward_tensor[i, valid_response_length - 1] = final_score
                 all_scores['llm_judge_score'].append(llm_scores[i])
