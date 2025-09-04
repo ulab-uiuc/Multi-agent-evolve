@@ -503,7 +503,7 @@ def get_general_generation_with_reference_prompt(
             ground_truth = "N/A"
         reference_questions_string += f"<question>\n{question['question']}\n</question>\n\n Ground Truth Answer: {ground_truth}\n\n"
 
-    return general_generation_based_on_reference_prompt + reference_questions_string + "\n### Your Task:\nCreate a Challenging and Modified Version of the Reference Task. Remember to structure your response in the specified format.\n\n---\n\n### Output Template:\n```<think>\n[Your reasoning about the task]\n</think>\n\n<question>\n[Your modified task]\n</question>```"
+    return general_generation_based_on_reference_prompt + reference_questions_string + "\n### Your Task:\nCreate a Challenging and Modified Version of the Reference Task. Remember to structure your response in the specified format.\n\n---\n\n### Output Template:\n```<think>\n[Your reasoning about the task]\n</think>\n\n<question>\n[Your modified task]\n</question>\n\n<answer>\n[Your complete solution to verify the task is solvable]\n</answer>```"
 def get_general_generator_prompt(
         reference_questions: List[Dict[str, str]],
 ) -> str:
@@ -512,7 +512,7 @@ def get_general_generator_prompt(
     for i, question in enumerate(reference_questions):
         reference_questions_string += f"<question>\n{question['question']}\n</question>\n"
 
-    return general_generation_prompt + reference_questions_string + "\n### Your Task:\nDesign a new and unique task that meets the requirements outlined above. Remember to structure your response in the specified format.\n\n---\n\n### Output Template:\n```<think>\n[Your reasoning about the task]\n</think>\n\n<question>\n[Your designed task]\n</question>```"
+    return general_generation_prompt + reference_questions_string + "\n### Your Task:\nDesign a new and unique task that meets the requirements outlined above. Remember to structure your response in the specified format.\n\n---\n\n### Output Template:\n```<think>\n[Your reasoning about the task]\n</think>\n\n<question>\n[Your designed task]\n</question>\n\n<answer>\n[Your complete solution to verify the task is solvable]\n</answer>```"
 
 def get_general_predictor_prompt(
         question: str,
