@@ -909,8 +909,9 @@ class GeneralIORewardManager:
         judge_with_actor: bool = False,
         train_judge: bool = False,
         infer_together: bool = False,
-        normalize_scores_in_batch: bool = False,
         prompt_manager=None,
+        normalize_scores_in_batch: bool = False,
+        use_format_reward: bool = False,
         **kwargs
     ):
         self.tokenizer = tokenizer
@@ -932,7 +933,8 @@ class GeneralIORewardManager:
         self.train_judge = train_judge
         self.infer_together = infer_together
         self.prompt_manager = prompt_manager
-        self.normalize_batch_scores = normalize_scores_in_batch
+        self.normalize_scores_in_batch = normalize_scores_in_batch
+        self.use_format_reward = use_format_reward
 
         assert not self.train_judge or self.judge_with_actor, "judge_with_actor must be activated if train_judge is True"
 
@@ -1200,13 +1202,93 @@ When you reference your own scores, you do not use the <score> and </score> tags
         
         avg_gen_scores = []
         avg_pred_scores = []
+
+        if problem_type.startswith("judge"):
+            try:
+                # Implement repetition penalty reward for judge tasks
+                ngram_size = 3  # Default n-gram size
+                max_penalty = -0.5  # Default max penalty
+                
+                def zipngram(text: str, ngram_size: int):
+                    """Split text into n-grams for repetition detection."""
+                    words = text.lower().split()
+                    return zip(*[words[i:] for i in range(ngram_size)]), words
+                
+                def count_score_tags(text: str) -> tuple:
+                    """Count <score> and </score> tags in the text."""
+                    score_open_count = text.count('<score>')
+                    score_close_count = text.count('</score>')
+                    return score_open_count, score_close_count
+                
+                # Calculate combined rewards for each response
+                judge_scores = []
+                for data_dict in data_dicts:
+                    # Get the response text from data_dict
+                    response_text = data_dict.get('response', '')
+                    
+                    if response_text == "":
+                        judge_scores.append(0.5)  # Neutral score for empty responses
+                        continue
+                    
+                    # 1. Calculate repetition penalty reward
+                    ngrams = set()
+                    total = 0
+                    ngram_array, words = zipngram(response_text, ngram_size)
+                    
+                    if len(words) < ngram_size:
+                        repetition_score = 0.5  # Neutral score for very short responses
+                    else:
+                        for ng in ngram_array:
+                            ngrams.add(ng)
+                            total += 1
+                        
+                        # Calculate repetition score (less repetition = higher score)
+                        if total > 0:
+                            uniqueness_ratio = len(ngrams) / total
+                            repetition_score = uniqueness_ratio  # Higher uniqueness = higher score
+                        else:
+                            repetition_score = 0.5
+                    
+                    # 2. Calculate tag reward
+                    open_tags, close_tags = count_score_tags(response_text)
+                    
+                    # Perfect score if exactly one <score> and one </score> tag
+                    if open_tags == 1 and close_tags == 1:
+                        tag_score = 1.0
+                    # Partial credit for having the right total number of tags
+                    elif open_tags + close_tags == 2:
+                        tag_score = 0.5
+                    # Small penalty for having some tags but wrong count
+                    elif open_tags > 0 or close_tags > 0:
+                        tag_score = 0.25
+                    # No tags at all
+                    else:
+                        tag_score = 0.0
+                    
+                    # Combine the two rewards (weighted average)
+                    # You can adjust these weights as needed
+                    repetition_weight = 0.7
+                    tag_weight = 0.3
+                    combined_score = (repetition_weight * repetition_score) + (tag_weight * tag_score)
+                    
+                    judge_scores.append(combined_score)
+                
+                avg_gen_scores = judge_scores
+                avg_pred_scores = []  # No pred scores for judge tasks
+                
+            except Exception as e:
+                print(f"Error in judge reward computation: {e}")
+                avg_gen_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
+                avg_pred_scores = []
+            
+            return avg_gen_scores, avg_pred_scores
         
         if problem_type.startswith("pred"):
             try:
                 if not self.judge_with_actor:
                     for data_dict in data_dicts:
                         avg_pred_scores.append(self._generate_llm_response(self._generate_prompt_for_pred(data_dict, self.infer_together))[0])
-                    if self.normalize_batch_scores:
+                    if self.normalize_scores_in_batch:
                         avg_pred_scores = self.normalize_scores_in_batch(avg_pred_scores)
                     return avg_gen_scores, avg_pred_scores
 
@@ -1268,7 +1350,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
                 print(f"Error in pred score computation: {e}")
                 avg_pred_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
 
-            if self.normalize_batch_scores:
+            if self.normalize_scores_in_batch:
                 avg_pred_scores = self.normalize_scores_in_batch(avg_pred_scores)
             return avg_gen_scores, avg_pred_scores
         
@@ -1521,7 +1603,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
             if self.infer_together:
                 avg_gen_scores = [0.5] * len(data_dicts)  # Fallback to neutral scores
         
-        if self.normalize_batch_scores:
+        if self.normalize_scores_in_batch:
             avg_gen_scores = self.normalize_scores_in_batch(avg_gen_scores)
             avg_pred_scores = self.normalize_scores_in_batch(avg_pred_scores)
 
@@ -1671,6 +1753,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
         if not question:
             # Fallback to extracting from reward_model or other locations
             question = data_item.non_tensor_batch.get('question', '')
+        answer = data_item.non_tensor_batch.get('answer', '')
         
         data_source = data_item.non_tensor_batch.get('data_source', '')
         extra_info = data_item.non_tensor_batch.get('extra_info', {})
@@ -1691,6 +1774,7 @@ When you reference your own scores, you do not use the <score> and </score> tags
         data_dict = {
             'generation': generation,
             'question': question,  # The question/problem to solve
+            'answer': answer,
             'ground_truth': ground_truth,  # The expected answer
             'data_source': data_source,
             'extra_info': extra_info,
@@ -1842,11 +1926,14 @@ When you reference your own scores, you do not use the <score> and </score> tags
             all_scores['accuracy'] = all_scores['llm_judge_score']  # For compatibility
         elif problem_type.startswith("judge"):
             PrettyPrinter.section_header("Computing Judge Rewards for GeneralIO Tasks")
+
+            rewards, _ = self._get_all_scores(data_dicts, rollout_actor_wg, n_samples, problem_type)
+
             for i, data_dict in enumerate(data_dicts):
                 valid_response_length = data_dict['valid_response_length']
-                reward_tensor[i, valid_response_length - 1] = 0.5
+                reward_tensor[i, valid_response_length - 1] = rewards[i]
 
-            all_scores['accuracy'] = [0.5] * len(data_dicts)  # Default neutral score for judge tasks
+            all_scores['format_reward'] = rewards  # Default neutral score for judge tasks
         else:
             # For other cases or when rollout_actor_wg is None
             PrettyPrinter.section_header("Computing Default Rewards for GeneralIO Tasks")

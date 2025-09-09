@@ -195,6 +195,7 @@ def main_task(config, compute_score=None):
             judge_with_actor=config.reward_fn.judge_with_actor,
             infer_together=config.reward_fn.infer_together,
             normalize_scores_in_batch=getattr(config.reward_fn, 'normalize_scores_in_batch', False),
+            use_format_reward=getattr(config.reward_fn, 'use_format_reward', False),
             # judge_with_actor only available for infering question and answer score together
         )
 
