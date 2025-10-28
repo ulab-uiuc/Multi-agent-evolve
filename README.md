@@ -1,9 +1,18 @@
 # Multi-Agent Evolve: LLM Self-Improve through Co-evolution
 
-Coming soon. Please give us a star if you are interested!
 
+<p align="center">
+    <a href="https://arxiv.org/abs/2510.23595">
+        <img alt="Build" src="https://img.shields.io/badge/arXiv-2510.23595-red?logo=arxiv">
+    </a>
+</p>
+
+
+Code coming soon. Please give us a star if you are interested!
 
 ## Citation
+
+Arxiv
 
 ```bibtex
 @misc{chen2025multiagentevolvellmselfimprove,
