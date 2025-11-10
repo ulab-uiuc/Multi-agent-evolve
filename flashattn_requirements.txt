@@ -1,0 +1,2 @@
+flash-attn==2.7.4.post1
+flashinfer-python==0.2.2.post1 
