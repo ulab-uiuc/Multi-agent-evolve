@@ -137,7 +137,7 @@ All three roles share one underlying model and are updated together using Task-R
 
 ## 🎄 Environment Setup
 ```bash
-conda env create -n mae python=3.10
+conda create -n mae python=3.10
 conda activate mae
 pip install -r requirements.txt
 pip install -r flashattn_requirements.txt
