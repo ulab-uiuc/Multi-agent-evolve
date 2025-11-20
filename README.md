@@ -140,7 +140,8 @@ All three roles share one underlying model and are updated together using Task-R
 conda create -n mae python=3.10
 conda activate mae
 pip install -r requirements.txt
-pip install -r flashattn_requirements.txt
+pip install flash-attn==2.7.4.post1 --no-build-isolation
+pip install flashinfer-python==0.2.2.post1
 python scripts/prepare_test_datasets.py 
 python -m absolute_zero_reasoner.data_construction.process_code_reasoning_data
 ```

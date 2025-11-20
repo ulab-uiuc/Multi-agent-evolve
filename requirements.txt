@@ -45,8 +45,6 @@ fastapi-cli==0.0.7
 fastrlock==0.8.3
 filelock==3.18.0
 fire==0.7.1
-flash_attn==2.7.4.post1
-flashinfer-python==0.2.2.post1
 fonttools==4.60.1
 frozenlist==1.6.2
 fsspec==2025.3.0
