@@ -9,17 +9,16 @@
 
 <div align="center" style="font-family: Arial, sans-serif;">
   <p>
-    <a href="#links" style="text-decoration: none; font-weight: bold;">🔗 Links</a> •
     <a href="#algorithm-flow" style="text-decoration: none; font-weight: bold;">⚙️ Algorithm Flow</a> •
     <a href="#results" style="text-decoration: none; font-weight: bold;">📊 Results</a>
+    <a href="#getting-started" style="text-decoration: none; font-weight: bold;">✨ Getting Started</a>
   </p>
   <p>
-    <a href="#getting-started" style="text-decoration: none; font-weight: bold;">✨ Getting Started</a> •
     <a href="#training" style="text-decoration: none; font-weight: bold;">🏋️ Training</a> •
     <a href="#evaluation-code" style="text-decoration: none; font-weight: bold;">📃 Evaluation</a>
+    <a href="#citation" style="text-decoration: none; font-weight: bold;">🎈 Citation</a>
   </p>
   <p>
-    <a href="#citation" style="text-decoration: none; font-weight: bold;">🎈 Citation</a> •
     <a href="#acknowledgement" style="text-decoration: none; font-weight: bold;">🌻 Acknowledgement</a> •
     <a href="#contact" style="text-decoration: none; font-weight: bold;">📧 Contact</a> •
     <a href="#star-history" style="text-decoration: none; font-weight: bold;">📈 Star History</a>
@@ -230,7 +229,7 @@ pip install --upgrade "evalplus[vllm] @ git+https://github.com/evalplus/evalplus
 Evaluation:
 ```bash
 condda activate evalplus
-bash evaluation/code_eval/scripts/run_evalplus.sh 0 <humaneval|mbpp> <hf_ckpt_path>
+bash evaluation/code_eval/scripts/run_evalplus.sh <humaneval|mbpp> <hf_ckpt_path>
 ```
 
 
