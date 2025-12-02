@@ -102,9 +102,9 @@ All three roles share one underlying model and are updated together using Task-R
     </tr>
     <tr>
       <td>SFT</td>
-      <td>63.28</td>
-      <td>37.41</td>
-      <td>53.87</td>
+      <td>67.08</td>
+      <td>41.89</td>
+      <td>57.92</td>
     </tr>
     <tr>
       <td>MAE (with reference)</td>
@@ -113,16 +113,16 @@ All three roles share one underlying model and are updated together using Task-R
       <td>57.11</td>
     </tr>
     <tr>
-      <td>MAE (no reference)</td>
-      <td>67.51</td>
-      <td>41.86</td>
-      <td>58.18</td>
+      <td class="underline"><b>MAE (no reference)</b></td>
+      <td class="underline"><b>69.45</b></td>
+      <td class="underline"><b>43.99</b></td>
+      <td class="underline"><b>60.19</b></td>
     </tr>
     <tr>
-      <td class="underline"><b>MAE (half reference)</b></td>
-      <td class="underline"><b>68.95</b></td>
-      <td class="underline"><b>43.96</b></td>
-      <td class="underline"><b>59.87</b></td>
+      <td>MAE (half reference)</td>
+      <td>68.95</td>
+      <td>43.96</td>
+      <td>59.87</td>
     </tr>
   </tbody>
 </table>
