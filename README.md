@@ -32,14 +32,14 @@
   <img src="assets/teaser_00.jpg" alt="Teaser" width="80%" />
 </p>
 
+* <b>[2025/10/27]</b> <b>Multi-Agent Evolve</b> is available on [arXiv](https://arxiv.org/abs/2510.23595)
+* <b>[2025/11/10]</b> We release the code for <b>Multi-Agent Evolve</b>
 
 <!-- ============================================== -->
 <div align="left">
   <h1 id="algorithm-flow">⚙️ Algorithm Flow</h1>
   <hr style="height: 3px; background: linear-gradient(90deg, #EF8E8D, #5755A3); border: none; border-radius: 3px;">
 </div>
-
-
 
 Our approach builds a self-evolving system for enhancing LLMs' general reasoning capabilities through three collaborative roles:
 
