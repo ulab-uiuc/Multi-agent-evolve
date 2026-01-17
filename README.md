@@ -221,6 +221,22 @@ bash scripts/evaluation/eval_OOD.sh
 # If you wish to evaluate base model, just set resume_mode to `disable` in these scripts
 ```
 
+### 📴 Offline Evaluation
+
+If you encounter network stability issues with the integrated LLM service or wish to evaluate on a local machine, you can use the offline evaluation pipeline:
+
+1. **Dump Evaluation Data**: Enable data dumping in your evaluation scripts by adding `+azr.dump_eval_data=True`. This will skip online API calls and save model generations to a JSONL file in your checkpoint directory (e.g., `evaluation_dump_EXPERIMENT_NAME.jsonl`).
+
+2. **Run Offline Evaluator**: Use the provided script to evaluate the dumped results. This script supports resuming and incremental saving.
+```bash
+python scripts/evaluation/offline_eval.py \
+    --input_file <path_to_dumped_file> \
+    --output_file evaluation_results.jsonl \
+    --summary_file evaluation_summary.json \
+    --api_keys_file api.json \
+    --workers 20
+```
+
 ## Code Benchmarks
 We use evalplus for code evaluation. A new conda env is needed for evalplus.
 ```bash
