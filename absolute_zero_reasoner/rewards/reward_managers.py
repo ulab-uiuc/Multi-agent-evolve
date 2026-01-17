@@ -1805,6 +1805,7 @@ def evaluate_single_item(args):
     try:
         # Random choose an api to balance workload
         import random
+        import time
         api_key = random.choice(api_keys)
         
         client = OpenAI(
@@ -1921,22 +1922,41 @@ Then determine if the model's answer is correct:
 
 <answer>TRUE</answer> or <answer>FALSE</answer>"""
 
-        completion = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            stream=stream
-        )
+        max_inner_retries = 5
+        result = ""
+        last_exception = None
+
+        for attempt in range(max_inner_retries):
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    stream=stream
+                )
+                
+                if stream:
+                    result = ""
+                    for chunk in completion:
+                        if chunk.choices[0].delta.content is not None:
+                            result += chunk.choices[0].delta.content
+                else:
+                    result = completion.choices[0].message.content.strip()
+                
+                break # Success
+            except Exception as e:
+                last_exception = e
+                print(f"Attempt {attempt+1}/{max_inner_retries} failed for item {item_data.get('index', 'unknown')}: {str(e)}")
+                if attempt < max_inner_retries - 1:
+                    time.sleep(1 * (2 ** attempt)) # Exponential backoff
         
-        if stream:
-            result = ""
-            for chunk in completion:
-                if chunk.choices[0].delta.content is not None:
-                    result += chunk.choices[0].delta.content
-        else:
-            result = completion.choices[0].message.content.strip()
+        if not result and last_exception:
+             raise last_exception
+        if not result and not last_exception:
+             # Just in case loop finishes without exception but result is somehow empty (unlikely with break)
+             pass 
         
         # Extract TRUE/FALSE from <answer></answer> tags
         answer_match = re.search(r'<answer>(TRUE|FALSE)</answer>', result, re.IGNORECASE)
@@ -1981,6 +2001,7 @@ class BenchmarkEvaluationRewardManager:
         stream: bool = False,
         max_workers: int = 15,  # Number of parallel processes
         api_keys: List[str] = None,
+        dump_eval_path: str = None,
         **kwargs
     ):
         self.tokenizer = tokenizer
@@ -1990,6 +2011,7 @@ class BenchmarkEvaluationRewardManager:
         self.top_p = top_p
         self.stream = stream
         self.max_workers = min(max_workers, mp.cpu_count())
+        self.dump_eval_path = dump_eval_path
         
         self.api_keys = api_keys
         
@@ -1998,13 +2020,15 @@ class BenchmarkEvaluationRewardManager:
             api_key=key,
             timeout=120,
             max_retries=5
-        ) for key in self.api_keys]
+        ) for key in self.api_keys] if self.api_keys else []
         
-        self.client_cycle = itertools.cycle(self.clients)
-        self.client_lock = threading.Lock()
-        
-        self.client = self.clients[0]
-        
+        if self.clients:
+            self.client_cycle = itertools.cycle(self.clients)
+            self.client_lock = threading.Lock()
+            self.client = self.clients[0]
+        else:
+            self.client = None
+    
     def _get_next_client(self):
         with self.client_lock:
             return next(self.client_cycle)
@@ -2055,9 +2079,47 @@ class BenchmarkEvaluationRewardManager:
             all_scores = defaultdict(list)
             correct_predictions = []
             
-            PrettyPrinter.section_header("Benchmark Evaluation (Multi-process)")
+            PrettyPrinter.section_header("Benchmark Evaluation")
             
             data_length = len(data)
+            
+            # --- DUMP MODE START ---
+            if self.dump_eval_path:
+                PrettyPrinter.status("Info", f"Dumping evaluation data to {self.dump_eval_path}", "info")
+                dump_items = []
+                for i in range(data_length):
+                    try:
+                        data_item = data[i]
+                        question = data_item.non_tensor_batch.get('question', '')
+                        ground_truth = data_item.non_tensor_batch.get('answer', '')
+                        data_source = data_item.non_tensor_batch.get('data_source', 'unknown')
+                        extra_info = data_item.non_tensor_batch.get('extra_info', {})
+                        metric_type = extra_info.get('metric', 'general_accuracy')
+                        
+                        response_ids = data_item.batch['responses']
+                        generation = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+                        model_answer = self._extract_model_answer(generation)
+                        
+                        dump_items.append({
+                            'question': question,
+                            'model_answer': model_answer,
+                            'ground_truth': ground_truth,
+                            'data_source': data_source,
+                            'metric_type': metric_type,
+                            'generation': generation
+                        })
+                    except Exception as e:
+                        print(f"Error dumping item {i}: {e}")
+
+                os.makedirs(os.path.dirname(self.dump_eval_path), exist_ok=True)
+                with open(self.dump_eval_path, 'a') as f: # Append mode
+                    for item in dump_items:
+                        f.write(json.dumps(item) + '\n')
+                
+                PrettyPrinter.status("Success", f"Dumped {len(dump_items)} items.", "success")
+                return reward_tensor, {} # Return empty metrics/zeros
+            # --- DUMP MODE END ---
+
             PrettyPrinter.status("Info", f"Processing {data_length} items with {self.max_workers} threads", "info")
             
             evaluation_tasks = []

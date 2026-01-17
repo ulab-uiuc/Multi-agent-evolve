@@ -279,6 +279,17 @@ class TaskRunner:
             )
 
             # For validation, use BenchmarkEvaluationRewardManager instead
+            dump_eval_path = None
+            if config.azr.get('dump_eval_data', False):
+                exp_name = config.trainer.experiment_name
+                # Prefer saving in resume_from_path (the checkpoint root) if available
+                dump_dir = getattr(config.trainer, 'resume_from_path', None)
+                if not dump_dir:
+                    dump_dir = config.trainer.default_local_dir
+                
+                dump_eval_path = f"{dump_dir}/evaluation_dump_{exp_name}.jsonl"
+                print(f"Dump evaluation data enabled. Path: {dump_eval_path}")
+
             val_reward_fn = BenchmarkEvaluationRewardManager(
                 tokenizer=tokenizer,
                 model_name=getattr(config.azr, 'benchmark_eval_model', 'meta/llama-3.1-405b-instruct'),
@@ -288,6 +299,7 @@ class TaskRunner:
                 stream=getattr(config.reward_fn, 'stream', True),
                 boxed_retry=config.reward_fn.boxed_retry,
                 api_keys=api_keys,  # Pass the loaded API keys
+                dump_eval_path=dump_eval_path,
             )
         else:
             reward_fn = CodeIORewardManager(
