@@ -17,7 +17,6 @@ def evaluate_single_item(args):
     (item_data, model_name, temperature, max_tokens, top_p, api_keys) = args
     
     try:
-        # Random choose an api to balance workload
         if not api_keys:
              return {
                 'index': item_data.get('index', -1),
@@ -26,13 +25,6 @@ def evaluate_single_item(args):
             }
             
         api_key = random.choice(api_keys)
-        
-        client = OpenAI(
-            base_url="https://integrate.api.nvidia.com/v1",
-            api_key=api_key,
-            timeout=300,
-            max_retries=5
-        )
         
         question = item_data.get('question', '')
         model_answer = item_data.get('model_answer', '')
@@ -145,28 +137,34 @@ Then determine if the model's answer is correct:
         result = ""
         last_exception = None
 
-        for attempt in range(max_inner_retries):
-            try:
-                completion = client.chat.completions.create(
-                    model=model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                    top_p=top_p,
-                    max_tokens=max_tokens,
-                    stream=True 
-                )
-                
-                result = ""
-                for chunk in completion:
-                    if chunk.choices[0].delta.content is not None:
-                        result += chunk.choices[0].delta.content
-                
-                break # Success
-            except Exception as e:
-                last_exception = e
-                # print(f"Attempt {attempt+1}/{max_inner_retries} failed for item {item_data.get('index', 'unknown')}: {str(e)}")
-                if attempt < max_inner_retries - 1:
-                    time.sleep(1 * (2 ** attempt)) # Exponential backoff
+        # Use context manager to ensure client is closed
+        with OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=api_key,
+            timeout=300,
+            max_retries=5
+        ) as client:
+            for attempt in range(max_inner_retries):
+                try:
+                    completion = client.chat.completions.create(
+                        model=model_name,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_tokens=max_tokens,
+                        stream=True 
+                    )
+                    
+                    result = ""
+                    for chunk in completion:
+                        if chunk.choices[0].delta.content is not None:
+                            result += chunk.choices[0].delta.content
+                    
+                    break # Success
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_inner_retries - 1:
+                        time.sleep(1 * (2 ** attempt)) # Exponential backoff
         
         if not result and last_exception:
              raise last_exception
@@ -205,6 +203,65 @@ Then determine if the model's answer is correct:
             'metric_type': item_data.get('metric_type', 'unknown')
         }
 
+def calculate_summary(output_file, summary_file):
+    print(f"Calculating summary from {output_file}...")
+    all_scores = defaultdict(list)
+    
+    try:
+        with open(output_file, 'r') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        res = json.loads(line)
+                        score = res.get('score', 0.0)
+                        source = res.get('data_source', 'unknown')
+                        
+                        all_scores['overall'].append(score)
+                        all_scores[source].append(score)
+                    except json.JSONDecodeError:
+                        continue
+    except Exception as e:
+        print(f"Error reading output file for summary: {e}")
+        return
+
+    # Prepare summary
+    summary = {}
+    if all_scores['overall']:
+        summary['overall'] = {
+            'accuracy': float(np.mean(all_scores['overall'])),
+            'count': len(all_scores['overall'])
+        }
+        for source, scores in all_scores.items():
+            if source != 'overall':
+                summary[source] = {
+                    'accuracy': float(np.mean(scores)),
+                    'count': len(scores)
+                }
+    
+    # Print summary
+    print("\nEvaluation Summary:")
+    print("=" * 60)
+    print(f"{'Benchmark':<30} | {'Count':<10} | {'Accuracy':<10}")
+    print("-" * 60)
+    if 'overall' in summary:
+        print(f"{'OVERALL':<30} | {summary['overall']['count']:<10} | {summary['overall']['accuracy']:.4f}")
+        print("-" * 60)
+        for source in sorted(summary.keys()):
+            if source != 'overall':
+                print(f"{source:<30} | {summary[source]['count']:<10} | {summary[source]['accuracy']:.4f}")
+    else:
+        print("No results available.")
+    print("=" * 60)
+    
+    # Save summary
+    try:
+        with open(summary_file, 'w') as f:
+            json.dump(summary, f, indent=2)
+        print(f"Aggregated summary saved to {summary_file}")
+    except Exception as e:
+        print(f"Error saving summary file: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Offline Evaluator for dumped JSONL data")
     parser.add_argument("--input_file", type=str, required=True, help="Path to the dumped JSONL file")
@@ -239,9 +296,8 @@ def main():
     
     print(f"Loaded {len(items)} items for evaluation.")
     
-    # Load existing results to resume
+    # Load existing results to resume (ONLY INDICES)
     processed_indices = set()
-    all_scores = defaultdict(list)
     
     if os.path.exists(args.output_file):
         with open(args.output_file, 'r') as f:
@@ -251,10 +307,6 @@ def main():
                         res = json.loads(line)
                         if 'index' in res and res['index'] is not None:
                             processed_indices.add(res['index'])
-                            score = res['score']
-                            source = res['data_source']
-                            all_scores['overall'].append(score)
-                            all_scores[source].append(score)
                     except json.JSONDecodeError:
                         continue
         print(f"Found {len(processed_indices)} already processed items. Resuming...")
@@ -269,8 +321,8 @@ def main():
                 args.model,
                 args.temperature,
                 500, # max_tokens
-                0.95, # top_p
-                api_keys
+                0.95, # top_p,
+                api_keys # Pass keys list
             ))
             
     print(f"Remaining items to evaluate: {len(tasks)}")
@@ -285,55 +337,16 @@ def main():
                 for future in as_completed(futures):
                     res = future.result()
                     
-                    # Write to file immediately
+                    # Write to file immediately and flush
                     f_out.write(json.dumps(res) + '\n')
-                    f_out.flush() # Ensure it's written to disk
-                    
-                    score = res['score']
-                    source = res['data_source']
-                    
-                    all_scores['overall'].append(score)
-                    all_scores[source].append(score)
+                    f_out.flush() 
                     
                     completed_count += 1
                     if completed_count % 10 == 0:
-                        print(f"Processed {completed_count}/{len(tasks)} items... Current Avg: {np.mean(all_scores['overall']):.4f}")
+                        print(f"Processed {completed_count}/{len(tasks)} items...")
 
-    # Prepare summary
-    summary = {}
-    if all_scores['overall']:
-        summary['overall'] = {
-            'accuracy': float(np.mean(all_scores['overall'])),
-            'count': len(all_scores['overall'])
-        }
-        for source, scores in all_scores.items():
-            if source != 'overall':
-                summary[source] = {
-                    'accuracy': float(np.mean(scores)),
-                    'count': len(scores)
-                }
-    
-    # Print summary
-    print("\nEvaluation Summary:")
-    print("=" * 60)
-    print(f"{'Benchmark':<30} | {'Count':<10} | {'Accuracy':<10}")
-    print("-" * 60)
-    if 'overall' in summary:
-        print(f"{'OVERALL':<30} | {summary['overall']['count']:<10} | {summary['overall']['accuracy']:.4f}")
-        print("-" * 60)
-        for source in sorted(summary.keys()):
-            if source != 'overall':
-                print(f"{source:<30} | {summary[source]['count']:<10} | {summary[source]['accuracy']:.4f}")
-    else:
-        print("No results available.")
-    print("=" * 60)
-    
-    # Save summary
-    with open(args.summary_file, 'w') as f:
-        json.dump(summary, f, indent=2)
-    
-    print(f"Results appended to {args.output_file}")
-    print(f"Aggregated summary saved to {args.summary_file}")
+    # Calculate summary at the end
+    calculate_summary(args.output_file, args.summary_file)
 
 if __name__ == "__main__":
     main()
