@@ -516,7 +516,7 @@ azr:
     update_iteration: 1
     data_len: null
     content_max_length: 8096
-    max_questions: 10000  # Limit for general questions dataset
+    max_questions: null  # Limit for general questions dataset
     valid_question_filter: all
     batched_estimate: False
     

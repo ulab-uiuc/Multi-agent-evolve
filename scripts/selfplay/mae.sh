@@ -78,7 +78,6 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.reward.generation_reward_config.generation_accuracy_convertion=inverse \
     azr.reward.generation_reward_config.answer_diversity_reward.hierarchical=false \
     azr.data_selection_strategy.content_max_length=8192 \
-    azr.data_selection_strategy.max_questions=10000 \
     azr.data_selection_strategy.valid_question_filter=all \
     azr.data_selection_strategy.batched_estimate=false \
     azr.data_selection_strategy.io_n=1 \
