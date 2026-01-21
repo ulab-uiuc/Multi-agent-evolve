@@ -1020,30 +1020,49 @@ class GeneralIORewardManager:
         
         extracted_scores = []
         
-        for tag_content in score_tags:
-            tag_content = tag_content.strip()
-            score_value = None
-            
-            # Priority 1: Try to extract fraction first (most specific)
-            fraction_match = re.search(r'\b(\d+)/(\d+)\b', tag_content)
-            if fraction_match:
-                numerator = int(fraction_match.group(1))
-                denominator = int(fraction_match.group(2))
-                if denominator != 0:
-                    score_value = float(Fraction(numerator, denominator))
-            else:
-                # Priority 2: Try to extract floating point number
-                float_match = re.search(r'\b(\d+\.\d+)\b', tag_content)
-                if float_match:
-                    score_value = float(float_match.group(1))
+        if score_tags:
+            for tag_content in score_tags:
+                tag_content = tag_content.strip()
+                score_value = None
+                
+                # Priority 1: Try to extract fraction first (most specific)
+                fraction_match = re.search(r'\b(\d+)/(\d+)\b', tag_content)
+                if fraction_match:
+                    numerator = int(fraction_match.group(1))
+                    denominator = int(fraction_match.group(2))
+                    if denominator != 0:
+                        score_value = float(Fraction(numerator, denominator))
                 else:
-                    # Priority 3: Try to extract integer
-                    integer_match = re.search(r'\b(\d+)\b', tag_content)
-                    if integer_match:
-                        score_value = float(integer_match.group(1))
-            
-            if score_value is not None:
-                extracted_scores.append(score_value)
+                    # Priority 2: Try to extract floating point number
+                    float_match = re.search(r'\b(\d+\.\d+)\b', tag_content)
+                    if float_match:
+                        score_value = float(float_match.group(1))
+                    else:
+                        # Priority 3: Try to extract integer
+                        integer_match = re.search(r'\b(\d+)\b', tag_content)
+                        if integer_match:
+                            score_value = float(integer_match.group(1))
+                
+                if score_value is not None:
+                    extracted_scores.append(score_value)
+        
+        if not extracted_scores:
+            # Fallback: extract the last numerical value in the text if no tags are present or extraction from tags failed
+            all_numbers = re.findall(r'\b\d+/\d+\b|\b\d+\.\d+\b|\b\d+\b', text)
+            if all_numbers:
+                last_num = all_numbers[-1]
+                if '/' in last_num:
+                    parts = last_num.split('/')
+                    try:
+                        if int(parts[1]) != 0:
+                            extracted_scores.append(float(Fraction(int(parts[0]), int(parts[1]))))
+                    except (ValueError, ZeroDivisionError):
+                        pass
+                else:
+                    try:
+                        extracted_scores.append(float(last_num))
+                    except ValueError:
+                        pass
         
         return extracted_scores
 
@@ -1098,7 +1117,7 @@ class GeneralIORewardManager:
             'pad_token_id': self.tokenizer.pad_token_id,
             'recompute_log_prob': False,
             'do_sample': True,
-            'validate': True,
+            'validate': False,
         }
 
         gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, rollout_actor_wg.world_size)
@@ -1234,7 +1253,7 @@ class GeneralIORewardManager:
                     })
 
                 # Optionally repeat judgments (n_samples) if desired
-                eval_prompts = eval_prompts  # could multiply by another factor if multi-judging needed
+                eval_prompts = eval_prompts * n_samples  # could multiply by another factor if multi-judging needed
                 # [TODO] Add n_samples here maybe
 
                 temp_judge_file = f'{self.output_path}/temp_generalio_judge.parquet'
@@ -1300,7 +1319,7 @@ class GeneralIORewardManager:
                         })
 
                     # Optionally repeat judgments (n_samples) if desired
-                    eval_prompts = eval_prompts  # could multiply by another factor if multi-judging needed
+                    eval_prompts = eval_prompts * n_samples  # could multiply by another factor if multi-judging needed
 
                     temp_judge_file = f'{self.output_path}/temp_generalio_judge.parquet'
                     pd.DataFrame(eval_prompts).to_parquet(temp_judge_file)
@@ -1363,7 +1382,7 @@ class GeneralIORewardManager:
                     question = "The question is a invalid question"
                     PrettyPrinter.status("No question tags found in response", "", "warning")
                 
-                prompt_text = f"Please solve the following question/problem:\n\n{question}"
+                prompt_text = self.prompt_manager.get_solver_instruction(question)
                 # TODO(cyx): Maybe we can use the same prompt for solver batch, though the effect may be minor
                 prompts_dict = {
                     'prompt': [{'role': 'user', 'content': prompt_text}],
@@ -1388,8 +1407,9 @@ class GeneralIORewardManager:
             batched_responses = []
             for b in batch:
                 response_text = self.tokenizer.decode(b.batch['responses'], skip_special_tokens=True)
+                extracted_content = extract_answer(response_text, self.reward_fn_extraction_type, boxed_retry=self.boxed_retry)
                 batched_responses.append({
-                    'response': response_text,
+                    'response': extracted_content if extracted_content else response_text,
                     'uid': b.non_tensor_batch['uid'],
                     'question': b.non_tensor_batch['question'],
                 })
@@ -1412,7 +1432,7 @@ class GeneralIORewardManager:
                         })
 
                 # Optionally repeat judgments (n_samples) if desired
-                eval_prompts = eval_prompts  # could multiply by another factor if multi-judging needed
+                eval_prompts = eval_prompts * n_samples  # could multiply by another factor if multi-judging needed
 
                 temp_judge_file = f'{self.output_path}/temp_generalio_judge.parquet'
                 pd.DataFrame(eval_prompts).to_parquet(temp_judge_file)

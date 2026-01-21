@@ -168,7 +168,7 @@ actor_rollout_ref:
     max_model_len: null
     temperature: 1.0
     top_k: -1 # 0 for hf rollout, -1 for vllm rollout
-    top_p: 1
+    top_p: 0.95
     use_fire_sampling: False
     prompt_length: ${data.max_prompt_length}  # not use for opensource
     response_length: ${data.max_response_length}

@@ -7,9 +7,12 @@ export RAY_memory_monitor_refresh_ms=0
 export RAY_LOGGING_LEVEL=DEBUG
 export HYDRA_FULL_ERROR=1
 export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
-export NCCL_P2P_DISABLE=1
+export HF_HUB_OFFLINE=1
+export WANDB_MODE=offline
+export NCCL_NVLS_ENABLE=0
+# export NCCL_P2P_DISABLE=1
 
-python -m absolute_zero_reasoner.main_azr_ppo \
+python -u -m absolute_zero_reasoner.main_azr_ppo \
     --config-name=azr_ppo_trainer_general \
     +benchmark_names="['truthfulqa', 'bbh', 'livebench_reasoning', 'amc', 'minerva', 'winogrande', 'olympiad', 'mmlu_pro']" \
     +benchmark_max_samples=1000 \
@@ -22,7 +25,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     data.max_prompt_length=8192 \
     data.max_validation_prompt_length=6144 \
     data.max_response_length=8192 \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-3B-Instruct \
+    actor_rollout_ref.model.path=/inspire/hdd/project/robot-reasoning/xuyue-p-xuyue/ziyu/.cache/huggingface/hub/models--Qwen--Qwen2.5-3B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=64 \
@@ -43,7 +46,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.ref.fsdp_config.param_offload=False \
     algorithm.kl_ctrl.kl_coef=0.0 \
-    trainer.default_local_dir=<path_to_your_root_run_directory>\
+    trainer.default_local_dir=/inspire/hdd/project/robot-reasoning/xuyue-p-xuyue/cy/Multi-agent-evolve/checkpoints\
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='MAE' \
@@ -84,7 +87,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.data_selection_strategy.batched_estimate=false \
     azr.data_selection_strategy.io_n=1 \
     trainer.resume_mode=resume_path \
-    trainer.resume_dir=<path_to_your_run_directory> \
-    trainer.resume_from_path=<path_to_your_checkpoint> \
+    trainer.resume_dir=/inspire/hdd/project/robot-reasoning/xuyue-p-xuyue/cy/Multi-agent-evolve/checkpoints/2026-01-20/19-15-25_MAE_MAE_3B_halfref \
+    trainer.resume_from_path=/inspire/hdd/project/robot-reasoning/xuyue-p-xuyue/cy/Multi-agent-evolve/checkpoints/2026-01-20/19-15-25_MAE_MAE_3B_halfref/general_io/models--Qwen--Qwen2.5-3B-Instruct/boxed/global_step_100 \
     trainer.total_epochs=30 \
+    +azr.dump_eval_data=True \
     +prompt_manager.template_file=absolute_zero_reasoner/data_construction/initial_prompt_templates/default.json $@

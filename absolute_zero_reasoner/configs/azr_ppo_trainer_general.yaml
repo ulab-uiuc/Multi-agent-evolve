@@ -193,6 +193,8 @@ actor_rollout_ref:
     do_sample: True
     # number of responses (i.e. num sample times)
     n: 1 # > 1 for grpo
+    repetition_penalty: 1.02
+    no_repeat_ngram_size: 15
 
     multi_stage_wake_up: false
 

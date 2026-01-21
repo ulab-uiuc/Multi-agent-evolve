@@ -12,9 +12,9 @@ from openai import OpenAI
 def evaluate_single_item(args):
     """
     Evaluate a single item using LLM.
-    args: (item_data, model_name, temperature, max_tokens, top_p, api_keys)
+    args: (item_data, model_name, temperature, max_tokens, top_p, api_keys, stream)
     """
-    (item_data, model_name, temperature, max_tokens, top_p, api_keys) = args
+    (item_data, model_name, temperature, max_tokens, top_p, api_keys, stream) = args
     
     try:
         if not api_keys:
@@ -152,13 +152,16 @@ Then determine if the model's answer is correct:
                         temperature=temperature,
                         top_p=top_p,
                         max_tokens=max_tokens,
-                        stream=True 
+                        stream=stream
                     )
                     
-                    result = ""
-                    for chunk in completion:
-                        if chunk.choices[0].delta.content is not None:
-                            result += chunk.choices[0].delta.content
+                    if stream:
+                        result = ""
+                        for chunk in completion:
+                            if chunk.choices[0].delta.content is not None:
+                                result += chunk.choices[0].delta.content
+                    else:
+                        result = completion.choices[0].message.content
                     
                     break # Success
                 except Exception as e:
@@ -265,14 +268,21 @@ def calculate_summary(output_file, summary_file):
 def main():
     parser = argparse.ArgumentParser(description="Offline Evaluator for dumped JSONL data")
     parser.add_argument("--input_file", type=str, required=True, help="Path to the dumped JSONL file")
-    parser.add_argument("--output_file", type=str, default="evaluation_results.jsonl", help="Path to save results (JSONL format)")
-    parser.add_argument("--summary_file", type=str, default="evaluation_summary.json", help="Path to save aggregated summary")
+    parser.add_argument("--output_file", type=str, default=None, help="Path to save results (JSONL format)")
+    parser.add_argument("--summary_file", type=str, default=None, help="Path to save aggregated summary")
     parser.add_argument("--api_keys_file", type=str, default="api.json", help="Path to API keys JSON file")
     parser.add_argument("--model", type=str, default="meta/llama-3.1-405b-instruct", help="Model name for evaluation")
-    parser.add_argument("--workers", type=int, default=10, help="Number of parallel workers")
+    parser.add_argument("--workers", type=int, default=40, help="Number of parallel workers")
     parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for generation")
+    parser.add_argument("--stream", action="store_true", help="Use streaming mode (default: False)")
     
     args = parser.parse_args()
+
+    # Set default output and summary files based on input_file if not provided
+    if args.output_file is None:
+        args.output_file = os.path.splitext(args.input_file)[0] + "_results.jsonl"
+    if args.summary_file is None:
+        args.summary_file = os.path.splitext(args.input_file)[0] + "_summary.json"
     
     # Load API keys
     try:
@@ -322,7 +332,8 @@ def main():
                 args.temperature,
                 500, # max_tokens
                 0.95, # top_p,
-                api_keys # Pass keys list
+                api_keys, # Pass keys list
+                args.stream # Pass stream flag
             ))
             
     print(f"Remaining items to evaluate: {len(tasks)}")
